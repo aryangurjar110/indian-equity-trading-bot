@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: groww-trading-terminal
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn indian_equity_agent.web.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: BROKER_TYPE
+        value: groww
+      - key: GROWW_WHITELISTED_IP
+        value: 152.59.27.230

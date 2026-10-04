@@ -1,0 +1,16 @@
+.env
+.env.*
+*.env
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+logs/
+data/kill_switch_state.json
+data/*.tmp
+cloudflared.exe
+TradingAgents/
+.venv/
+venv/
+mingit/
+trading_bot_cloud.zip
