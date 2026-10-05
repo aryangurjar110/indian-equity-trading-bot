@@ -48,7 +48,7 @@ class IndianMarketCalendar:
     PRE_MARKET_START = time(9, 0)
     PRE_MARKET_END = time(9, 8)
     REGULAR_OPEN = time(9, 15)
-    ENTRY_ALLOWED_START = time(9, 20)      # Avoid first 5 minutes of high volatility/auction noise
+    ENTRY_ALLOWED_START = time(9, 15)      # Entry allowed from market open (09:15 IST)
     ENTRY_ALLOWED_END = time(15, 5)        # Disallow new intraday entries after 15:05
     INTRADAY_SQUAREOFF = time(15, 15)      # Mandatory auto-squareoff of MIS positions
     REGULAR_CLOSE = time(15, 30)

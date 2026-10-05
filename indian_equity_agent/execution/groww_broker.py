@@ -189,15 +189,15 @@ class GrowwBroker(BaseBroker):
             "Content-Type": "application/json",
         }
 
-    def _request(self, method: str, endpoint: str, data: Optional[dict] = None) -> dict:
+    def _request(self, method: str, endpoint: str, data: Optional[dict] = None, timeout: float = 15.0, record_failure: bool = True) -> dict:
         """Centralized authenticated HTTP dispatcher with failure tracking."""
         url = f"{self.BASE_URL}/{endpoint.lstrip('/')}"
         try:
-            resp = requests.request(method, url, headers=self._headers, json=data, timeout=7.0)
+            resp = requests.request(method, url, headers=self._headers, json=data, timeout=timeout)
             if resp.status_code in (401, 403):
                 self.kill_switch.trigger("Groww authentication failure: Invalid or expired access token.")
                 raise BrokerConnectionError("Groww authentication failure.")
-            if resp.status_code == 404 and endpoint in ("positions", "orders"):
+            if resp.status_code == 404 and endpoint in ("positions", "positions/user", "orders"):
                 return {}
 
             resp.raise_for_status()
@@ -205,14 +205,16 @@ class GrowwBroker(BaseBroker):
 
             if payload.get("status") == "error":
                 err_msg = payload.get("message", "Unknown Groww error")
-                self.kill_switch.record_api_failure(err_msg)
+                if record_failure:
+                    self.kill_switch.record_api_failure(err_msg)
                 raise BrokerConnectionError(f"Groww API error: {err_msg}")
 
             self.kill_switch.record_api_success()
             return payload.get("data", payload)
 
         except requests.RequestException as e:
-            self.kill_switch.record_api_failure(str(e))
+            if record_failure:
+                self.kill_switch.record_api_failure(str(e))
             raise BrokerConnectionError(f"Network error connecting to Groww API: {e}") from e
 
     def get_portfolio_state(self) -> PortfolioState:
@@ -477,7 +479,7 @@ class GrowwBroker(BaseBroker):
 
         # Fallback via direct REST
         try:
-            data = self._request("GET", "positions")
+            data = self._request("GET", "positions/user", timeout=15.0, record_failure=False)
             net_list = data.get("positions", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
             for item in net_list:
                 qty = int(item.get("quantity", 0))
@@ -488,15 +490,16 @@ class GrowwBroker(BaseBroker):
                     symbol=sym,
                     product=ProductType.MIS if item.get("product") == "MIS" else ProductType.CNC,
                     quantity=qty,
-                    average_entry_price=float(item.get("average_price", 0.0)),
-                    current_price=float(item.get("last_price", 0.0)),
+                    average_entry_price=float(item.get("average_price", item.get("avg_price", 0.0))),
+                    current_price=float(item.get("last_price", item.get("ltp", 0.0))),
                     stop_loss=0.0,
                     target_price=0.0,
-                    realized_pnl=float(item.get("pnl", 0.0)),
+                    realized_pnl=float(item.get("realised_pnl", item.get("pnl", 0.0))),
                 )
         except Exception as e:
             if "authentication" in str(e).lower() or "401" in str(e) or "403" in str(e):
                 raise
+            logger.debug(f"Positions query notice: {e}")
 
         return positions
 

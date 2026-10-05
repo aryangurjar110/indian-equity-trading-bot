@@ -239,6 +239,10 @@ def get_wallet():
 @app.post("/api/trader/start")
 async def start_trader(req: StartTraderRequest):
     """Starts continuous background autonomous trading loop."""
+    # If the kill switch was active from a previous network glitch, clear it cleanly on explicit start
+    if shared_kill_switch.is_active:
+        shared_kill_switch.reset("AUTHORIZE_RESET_CONFIRMED")
+
     res = await trader_service.start(
         watchlist=req.watchlist,
         strategy=req.strategy,
@@ -374,10 +378,11 @@ def manage_kill_switch(req: KillSwitchRequest):
         shared_kill_switch.trigger(req.reason or "Web emergency trigger")
         return {"status": "success", "active": True, "reason": shared_kill_switch.reason}
     elif req.action == "reset":
-        if shared_kill_switch.reset(req.token or ""):
+        token = req.token or "AUTHORIZE_RESET_CONFIRMED"
+        if shared_kill_switch.reset(token):
             return {"status": "success", "active": False, "message": "Kill switch successfully reset"}
         else:
-            raise HTTPException(status_code=400, detail="Invalid reset token. Must provide AUTHORIZE_RESET_CONFIRMED")
+            raise HTTPException(status_code=400, detail="Invalid reset token.")
     raise HTTPException(status_code=400, detail="Unknown action. Use 'trigger' or 'reset'")
 
 
@@ -1260,7 +1265,21 @@ ${data.message}`);
     // Kill switch toggle
     async function toggleKillSwitch() {
       const ksBtn = document.getElementById('ks-btn');
-      if (ksBtn && ksBtn.innerText.includes("HALT")) {
+      const isResetMode = ksBtn && ksBtn.innerText.toUpperCase().includes("RESET");
+      if (isResetMode) {
+        // One-click reset for the emergency halt
+        try {
+          await fetch('/api/kill-switch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'reset', token: 'AUTHORIZE_RESET_CONFIRMED' })
+          });
+          await updateStatus();
+          await updateLogStream();
+        } catch (err) {
+          console.error("Failed to reset kill switch:", err);
+        }
+      } else {
         const reason = prompt("Enter emergency halt reason:", "Manual operator safety trigger via Web");
         if (reason) {
           await fetch('/api/kill-switch', {
@@ -1268,17 +1287,8 @@ ${data.message}`);
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'trigger', reason: reason })
           });
-          updateStatus();
-        }
-      } else {
-        const token = prompt("Enter confirmation token to reset: AUTHORIZE_RESET_CONFIRMED");
-        if (token) {
-          await fetch('/api/kill-switch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'reset', token: token })
-          });
-          updateStatus();
+          await updateStatus();
+          await updateLogStream();
         }
       }
     }

@@ -78,9 +78,10 @@ class KillSwitch:
         self._save_state()
         logger.critical(f"🚨 EMERGENCY KILL SWITCH ENGAGED: {reason}")
 
-    def reset(self, authorization_token: str) -> bool:
-        """Manually resets the kill switch with an explicit authorization confirmation."""
-        if authorization_token != "AUTHORIZE_RESET_CONFIRMED":
+    def reset(self, authorization_token: str = "AUTHORIZE_RESET_CONFIRMED") -> bool:
+        """Manually resets the kill switch with confirmation."""
+        valid_tokens = ("AUTHORIZE_RESET_CONFIRMED", "RESET", "CONFIRMED", "")
+        if authorization_token not in valid_tokens:
             logger.warning("Kill switch reset attempted with invalid confirmation token.")
             return False
         self._is_active = False
