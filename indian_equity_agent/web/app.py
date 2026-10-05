@@ -996,7 +996,7 @@ ${data.message}`);
             if (banner) {
               banner.classList.remove('hidden');
               if (bannerBox) bannerBox.className = "rounded-xl p-3.5 text-xs font-mono border bg-amber-950/70 border-amber-700/80 flex flex-wrap items-center justify-between gap-3 text-amber-200 shadow-lg";
-              if (bannerMsg) bannerMsg.innerHTML = `<span class="font-bold text-amber-300">⚠️ ACTION REQUIRED FOR LIVE GROWW ORDERS:</span> Whitelist IP <code class="px-1.5 py-0.5 rounded bg-black/60 text-white font-bold">${wallet.public_ip || '152.59.27.230'}</code> in Groww &rarr; Settings &rarr; Trading APIs.`;
+              if (bannerMsg) bannerMsg.innerHTML = `<span class="font-bold text-amber-300">⚠️ ACTION REQUIRED FOR LIVE GROWW ORDERS:</span> Whitelist IP <code class="px-1.5 py-0.5 rounded bg-black/60 text-white font-bold">${wallet.live_network_ip || wallet.public_ip}</code> in Groww &rarr; Settings &rarr; Trading APIs.`;
             }
           } else {
             if (banner) banner.classList.add('hidden');

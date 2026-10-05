@@ -279,7 +279,7 @@ class GrowwBroker(BaseBroker):
                 total_equity = max(0.0, round(avail_cash + used_margin + unrealized_pnl + collateral + cnc_holdings_val, 2))
 
                 ip_unreg = getattr(self, "_ip_unregistered", False)
-                pub_ip = getattr(self, "_public_ip", None) or self._detect_public_ip()
+                pub_ip = self._get_live_network_ip()
                 user_msg = f"Connected to Live Groww Account (UCC: {self._ucc or 'Active'})"
                 if ip_unreg:
                     user_msg += f" ⚠️ ACTION REQUIRED: Whitelist IP {pub_ip} in Groww Settings -> Trading APIs to execute live orders."
@@ -399,9 +399,10 @@ class GrowwBroker(BaseBroker):
                         except Exception as retry_err:
                             e = retry_err
 
-                if "unregistered ip" in err_str or "registered ip" in err_str or "whitelist" in err_str:
+                if "unregistered ip" in err_str or "registered ip" in err_str or "whitelist" in err_str or "ga005" in err_str:
                     self._ip_unregistered = True
-                    err_clean = f"Groww rejected order: Unregistered IP address. Please whitelist your public IP ({self._public_ip}) in Groww -> Settings -> Trading APIs."
+                    live_ip = self._get_live_network_ip()
+                    err_clean = f"Groww rejected order: Unregistered IP address (GA005). Your active connection IP is {live_ip}. Please whitelist {live_ip} in Groww -> Settings -> Trading APIs."
                 else:
                     err_clean = str(e)
 
