@@ -11,4 +11,4 @@ services:
       - key: BROKER_TYPE
         value: groww
       - key: GROWW_WHITELISTED_IP
-        value: 152.59.27.230
+        value: 74.220.48.71
