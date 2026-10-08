@@ -2,6 +2,7 @@
 
 import pytest
 import asyncio
+import time
 from fastapi.testclient import TestClient
 
 from indian_equity_agent.web.trader_service import AutonomousTraderService
@@ -148,6 +149,39 @@ def test_web_api_endpoints():
     assert data["portfolio"]["daily_net_pnl"] == round(
         data["portfolio"]["daily_gross_pnl"] - data["portfolio"]["total_charges"], 2
     )
+
+    # Test /api/status with active open position
+    from indian_equity_agent.web.app import shared_broker
+    from indian_equity_agent.core.models import Position
+    if shared_broker:
+        test_pos = Position(
+            symbol="BEL",
+            product=ProductType.MIS,
+            quantity=-1,
+            average_entry_price=376.0,
+            current_price=375.0,
+        )
+        if hasattr(shared_broker, "positions"):
+            shared_broker.positions["BEL"] = test_pos
+        elif hasattr(shared_broker, "_cached_positions"):
+            shared_broker._cached_positions = {"BEL": test_pos}
+            shared_broker._cached_positions_ts = time.time()
+        
+        # Invalidate cache so get_status recalculates
+        import indian_equity_agent.web.app as web_app
+        web_app._cached_status_dict = None
+        
+        status_resp2 = client.get("/api/status")
+        assert status_resp2.status_code == 200
+        d2 = status_resp2.json()
+        assert "error" not in d2
+        if len(d2["positions"]) > 0:
+            p0 = d2["positions"][0]
+            assert "net_unrealized_pnl" in p0
+            assert "est_charges" in p0
+            assert "incurred_charges" in p0
+            assert p0["est_charges"] > 0.0
+            assert d2["portfolio"]["total_charges"] > 0.0
 
 
 def test_intelligent_strategy_selection(tmp_path):
