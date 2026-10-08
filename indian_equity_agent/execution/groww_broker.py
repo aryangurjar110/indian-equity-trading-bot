@@ -74,6 +74,7 @@ class GrowwBroker(BaseBroker):
         self._cached_portfolio_ts: float = 0.0
         self._cached_wallet_margins: Optional[Dict[str, Any]] = None
         self._cached_wallet_ts: float = 0.0
+        self._last_auth_fail_ts: float = 0.0
         self._ensure_client()
 
     @staticmethod
@@ -105,6 +106,10 @@ class GrowwBroker(BaseBroker):
         """Initializes or refreshes the GrowwAPI client using API key & secret."""
         if self._client:
             return self._client
+
+        now_ts = time.time()
+        if self._last_auth_fail_ts and (now_ts - self._last_auth_fail_ts < 15.0):
+            return None
 
         try:
             from growwapi import GrowwAPI
@@ -178,8 +183,10 @@ class GrowwBroker(BaseBroker):
             except Exception:
                 pass
 
+            self._last_auth_fail_ts = now_ts
             return None
 
+        self._last_auth_fail_ts = now_ts
         return None
 
     @property
@@ -500,8 +507,10 @@ class GrowwBroker(BaseBroker):
                 logger.warning(f"Error fetching Groww positions via SDK: {e}")
 
         # Fallback via direct REST
+        if not self.access_token:
+            return positions
         try:
-            data = self._request("GET", "positions/user", timeout=15.0, record_failure=False)
+            data = self._request("GET", "positions/user", timeout=5.0, record_failure=False)
             net_list = data.get("positions", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
             for item in net_list:
                 qty = int(item.get("quantity", 0))
