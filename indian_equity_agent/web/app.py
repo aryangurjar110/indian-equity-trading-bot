@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
@@ -145,11 +146,11 @@ _cached_status_ts = 0.0
 def get_status():
     """Returns real-time system, market, and runner status with exact statutory charges."""
     global _cached_status_dict, _cached_status_ts
-    now_ts = time.time()
-    if _cached_status_dict is not None and (now_ts - _cached_status_ts < 4.0):
-        return _cached_status_dict
-
     try:
+        now_ts = time.time()
+        if _cached_status_dict is not None and (now_ts - _cached_status_ts < 4.0):
+            return _cached_status_dict
+
         now_ist = IndianMarketCalendar.now_ist()
         portfolio = shared_broker.get_portfolio_state()
         wallet_info = shared_broker.get_wallet_margins()
