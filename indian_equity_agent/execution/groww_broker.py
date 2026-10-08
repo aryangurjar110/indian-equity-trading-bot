@@ -121,20 +121,11 @@ class GrowwBroker(BaseBroker):
         if self.access_token:
             try:
                 client = GrowwAPI(self.access_token)
-                try:
-                    profile = client.get_user_profile()
-                    self._ucc = profile.get("ucc", "") if isinstance(profile, dict) else ""
-                except Exception:
-                    pass
-                # Verify access token works with margin check
-                client.get_available_margin_details()
                 self._client = client
                 self._last_auth_error = ""
-                self.kill_switch.record_api_success()
-                logger.info(f"Groww client authenticated with access token (UCC: {self._ucc})")
                 return self._client
             except Exception as e:
-                logger.info(f"Existing Groww access token expired or rejected: {e}. Refreshing...")
+                logger.info(f"Existing Groww access token init notice: {e}")
                 self._client = None
 
         # 2. Automatically generate fresh access token using api_key and secret
@@ -228,7 +219,7 @@ class GrowwBroker(BaseBroker):
     def get_portfolio_state(self) -> PortfolioState:
         """Fetches live margins and open positions from Groww."""
         now_ts = time.time()
-        if self._cached_portfolio_state is not None and (now_ts - self._cached_portfolio_ts < 5.0):
+        if self._cached_portfolio_state is not None and (now_ts - self._cached_portfolio_ts < 10.0):
             return self._cached_portfolio_state
 
         client = self._ensure_client()
@@ -260,9 +251,40 @@ class GrowwBroker(BaseBroker):
                 )
                 self._cached_portfolio_state = state
                 self._cached_portfolio_ts = now_ts
+
+                # Populate cached wallet margins simultaneously
+                ip_unreg = getattr(self, "_ip_unregistered", False)
+                pub_ip = self._public_ip or self._get_live_network_ip()
+                self._cached_wallet_margins = {
+                    "status": "CONNECTED",
+                    "available_cash": avail_cash,
+                    "used_margin": used_margin,
+                    "collateral": collateral,
+                    "total_equity": total_equity,
+                    "daily_realized_pnl": realized_pnl,
+                    "unrealized_pnl": round(unrealized_pnl, 2),
+                    "daily_total_pnl": round(realized_pnl + unrealized_pnl, 2),
+                    "positions_count": len(positions_data),
+                    "ucc": self._ucc,
+                    "message": f"Connected to Live Groww Account (UCC: {self._ucc or 'Active'})",
+                    "ip_whitelist_required": ip_unreg,
+                    "public_ip": pub_ip,
+                    "live_network_ip": self._get_live_network_ip(),
+                }
+                self._cached_wallet_ts = now_ts
                 return state
             except Exception as e:
+                err_str = str(e).lower()
                 logger.warning(f"Error reading Groww margins via SDK: {e}")
+                if "rate limit" in err_str or "429" in err_str:
+                    if self._cached_portfolio_state is not None:
+                        return self._cached_portfolio_state
+                elif "unauthor" in err_str or "401" in err_str or "token" in err_str:
+                    self._client = None
+                    self.access_token = None
+
+        if self._cached_portfolio_state is not None:
+            return self._cached_portfolio_state
 
         # Fallback if client is unauthenticated or credentials missing
         return PortfolioState(
@@ -277,53 +299,13 @@ class GrowwBroker(BaseBroker):
     def get_wallet_margins(self) -> Dict[str, Any]:
         """Fetches detailed live margin, cash, and PnL breakdown from Groww wallet."""
         now_ts = time.time()
-        if self._cached_wallet_margins is not None and (now_ts - self._cached_wallet_ts < 5.0):
+        if self._cached_wallet_margins is not None and (now_ts - self._cached_wallet_ts < 10.0):
             return self._cached_wallet_margins
 
-        client = self._ensure_client()
-        if client:
-            try:
-                margin_data = client.get_available_margin_details() or {}
-                clear_cash = _to_float(margin_data.get("clear_cash", 0.0))
-                eq_details = margin_data.get("equity_margin_details") or {}
-                cnc_avail = _to_float(eq_details.get("cnc_balance_available", clear_cash))
-                avail_cash = max(clear_cash, cnc_avail)
-                used_margin = _to_float(margin_data.get("net_margin_used", 0.0))
-                collateral = _to_float(margin_data.get("collateral_available", 0.0))
-
-                positions_data = self.get_positions()
-                unrealized_pnl = sum(p.unrealized_pnl for p in positions_data.values())
-                realized_pnl = sum(p.realized_pnl for p in positions_data.values())
-                cnc_holdings_val = sum(p.position_value for p in positions_data.values() if p.product == ProductType.CNC and p.quantity > 0)
-                total_equity = max(0.0, round(avail_cash + used_margin + unrealized_pnl + collateral + cnc_holdings_val, 2))
-
-                ip_unreg = getattr(self, "_ip_unregistered", False)
-                pub_ip = self._public_ip or self._get_live_network_ip()
-                user_msg = f"Connected to Live Groww Account (UCC: {self._ucc or 'Active'})"
-                if ip_unreg:
-                    user_msg += f" ⚠️ ACTION REQUIRED: Whitelist IP {pub_ip} in Groww Settings -> Trading APIs to execute live orders."
-
-                res = {
-                    "status": "CONNECTED",
-                    "available_cash": avail_cash,
-                    "used_margin": used_margin,
-                    "collateral": collateral,
-                    "total_equity": total_equity,
-                    "daily_realized_pnl": realized_pnl,
-                    "unrealized_pnl": unrealized_pnl,
-                    "daily_total_pnl": realized_pnl + unrealized_pnl,
-                    "positions_count": len(positions_data),
-                    "ucc": self._ucc,
-                    "message": user_msg,
-                    "ip_whitelist_required": ip_unreg,
-                    "public_ip": pub_ip,
-                    "live_network_ip": self._get_live_network_ip(),
-                }
-                self._cached_wallet_margins = res
-                self._cached_wallet_ts = now_ts
-                return res
-            except Exception as e:
-                logger.warning(f"Error fetching Groww wallet margins: {e}")
+        # Trigger get_portfolio_state which populates wallet cache
+        self.get_portfolio_state()
+        if self._cached_wallet_margins is not None:
+            return self._cached_wallet_margins
 
         if not self.api_key:
             return {
