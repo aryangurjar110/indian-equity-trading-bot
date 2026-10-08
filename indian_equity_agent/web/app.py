@@ -263,19 +263,19 @@ async def stop_trader():
 
 
 @app.get("/api/trader/status")
-def get_trader_status():
+async def get_trader_status():
     """Returns autonomous runner status."""
     return trader_service.get_status()
 
 
 @app.get("/api/logs/stream")
-def get_logs_stream(limit: int = 100):
+async def get_logs_stream(limit: int = 100):
     """Returns live event stream for the in-browser terminal."""
     return trader_service.get_logs(limit=limit)
 
 
 @app.post("/api/logs/clear")
-def clear_logs():
+async def clear_logs():
     """Clears the in-memory activity log buffer."""
     if hasattr(trader_service, 'event_logs'):
         trader_service.event_logs.clear()

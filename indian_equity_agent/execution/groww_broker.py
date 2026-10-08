@@ -8,6 +8,7 @@ All credentials are kept strictly in .env and outside the source code.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import requests
@@ -69,6 +70,10 @@ class GrowwBroker(BaseBroker):
         self._ip_unregistered = False
         self._local_positions: Dict[str, Position] = {}
         self._local_orders: List[Order] = []
+        self._cached_portfolio_state: Optional[PortfolioState] = None
+        self._cached_portfolio_ts: float = 0.0
+        self._cached_wallet_margins: Optional[Dict[str, Any]] = None
+        self._cached_wallet_ts: float = 0.0
         self._ensure_client()
 
     @staticmethod
@@ -215,6 +220,10 @@ class GrowwBroker(BaseBroker):
 
     def get_portfolio_state(self) -> PortfolioState:
         """Fetches live margins and open positions from Groww."""
+        now_ts = time.time()
+        if self._cached_portfolio_state is not None and (now_ts - self._cached_portfolio_ts < 5.0):
+            return self._cached_portfolio_state
+
         client = self._ensure_client()
         if client:
             try:
@@ -234,7 +243,7 @@ class GrowwBroker(BaseBroker):
                 # Total equity = Available cash + Blocked margin + Unrealized PnL + Collateral + Long CNC Delivery Value
                 total_equity = max(0.0, round(avail_cash + used_margin + unrealized_pnl + collateral + cnc_holdings_val, 2))
 
-                return PortfolioState(
+                state = PortfolioState(
                     cash=avail_cash,
                     total_equity=total_equity,
                     peak_equity=total_equity,
@@ -242,6 +251,9 @@ class GrowwBroker(BaseBroker):
                     daily_realized_pnl=realized_pnl,
                     positions=positions_data,
                 )
+                self._cached_portfolio_state = state
+                self._cached_portfolio_ts = now_ts
+                return state
             except Exception as e:
                 logger.warning(f"Error reading Groww margins via SDK: {e}")
 
@@ -257,6 +269,10 @@ class GrowwBroker(BaseBroker):
 
     def get_wallet_margins(self) -> Dict[str, Any]:
         """Fetches detailed live margin, cash, and PnL breakdown from Groww wallet."""
+        now_ts = time.time()
+        if self._cached_wallet_margins is not None and (now_ts - self._cached_wallet_ts < 5.0):
+            return self._cached_wallet_margins
+
         client = self._ensure_client()
         if client:
             try:
@@ -275,12 +291,12 @@ class GrowwBroker(BaseBroker):
                 total_equity = max(0.0, round(avail_cash + used_margin + unrealized_pnl + collateral + cnc_holdings_val, 2))
 
                 ip_unreg = getattr(self, "_ip_unregistered", False)
-                pub_ip = self._get_live_network_ip()
+                pub_ip = self._public_ip or self._get_live_network_ip()
                 user_msg = f"Connected to Live Groww Account (UCC: {self._ucc or 'Active'})"
                 if ip_unreg:
                     user_msg += f" ⚠️ ACTION REQUIRED: Whitelist IP {pub_ip} in Groww Settings -> Trading APIs to execute live orders."
 
-                return {
+                res = {
                     "status": "CONNECTED",
                     "available_cash": avail_cash,
                     "used_margin": used_margin,
@@ -296,6 +312,9 @@ class GrowwBroker(BaseBroker):
                     "public_ip": pub_ip,
                     "live_network_ip": self._get_live_network_ip(),
                 }
+                self._cached_wallet_margins = res
+                self._cached_wallet_ts = now_ts
+                return res
             except Exception as e:
                 logger.warning(f"Error fetching Groww wallet margins: {e}")
 
@@ -341,6 +360,8 @@ class GrowwBroker(BaseBroker):
 
     def place_order(self, order: Order) -> Order:
         """Submits regular order to NSE via Groww."""
+        self._cached_portfolio_state = None
+        self._cached_wallet_margins = None
         client = self._ensure_client()
         clean_symbol = order.symbol.replace(".NS", "").replace(".BO", "").strip().upper()
         groww_tx_type = "BUY" if order.side == OrderSide.BUY else "SELL"
@@ -434,6 +455,8 @@ class GrowwBroker(BaseBroker):
             return order
 
     def cancel_order(self, order_id: str) -> bool:
+        self._cached_portfolio_state = None
+        self._cached_wallet_margins = None
         client = self._ensure_client()
         if client:
             try:
