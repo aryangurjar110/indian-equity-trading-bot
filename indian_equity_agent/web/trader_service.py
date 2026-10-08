@@ -123,6 +123,7 @@ class AutonomousTraderService:
         # Concurrency & In-Flight Tracking
         self._execution_lock: Optional[asyncio.Lock] = None
         self._in_flight_symbols: set[str] = set()
+        self._symbol_cooldown: Dict[str, float] = {}
 
         # Statutory Taxes & Brokerage Accumulator (STT, GST, SEBI, Stamp Duty, NSE Fees, Brokerage)
         self.accumulated_charges = 0.0
@@ -616,6 +617,12 @@ class AutonomousTraderService:
         """Safely evaluates a single symbol candidate without breaking concurrent batch execution."""
         if not self.is_running:
             return
+        norm_sym = _normalize_symbol(symbol)
+        now_ts = time.time()
+        cooldown_until = self._symbol_cooldown.get(norm_sym, 0.0)
+        if now_ts < cooldown_until:
+            logger.debug(f"Skipping {norm_sym}: on cooldown for another {int(cooldown_until - now_ts)}s")
+            return
         self.current_symbol = symbol
         try:
             await self._evaluate_symbol(symbol, now_ist, is_entry_allowed)
@@ -764,11 +771,14 @@ class AutonomousTraderService:
             try:
                 executed = await asyncio.to_thread(self.broker.place_order, order)
                 if executed.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
+                    self._symbol_cooldown.pop(norm_sym, None)
                     self._log("GROWW", f"🚀 REAL TRADE PLACED TO GROWW: {executed.side.value} {qty} {clean_name} @ ₹{order.price:,.2f} | Leverage: {leverage_str} | Groww ID: {executed.order_id}", "SUCCESS")
                 else:
-                    self._log("GROWW", f"❌ GROWW REJECTION for {clean_name}: {executed.rejection_reason}", "ERROR")
+                    self._symbol_cooldown[norm_sym] = time.time() + 300.0
+                    self._log("GROWW", f"❌ GROWW REJECTION for {clean_name} (Cooldown 5m): {executed.rejection_reason}", "ERROR")
                     if "unregistered ip" in (executed.rejection_reason or "").lower() or "whitelist" in (executed.rejection_reason or "").lower():
-                        self._log("GROWW", "⚠️ ACTION REQUIRED: Add IP 152.59.27.230 to Groww Web -> Settings -> Trading APIs -> Whitelist IP to trade live.", "WARNING")
+                        pub_ip = getattr(self.broker, "_public_ip", None) or "active IP"
+                        self._log("GROWW", f"⚠️ ACTION REQUIRED: Add IP {pub_ip} to Groww Web -> Settings -> Trading APIs -> Whitelist IP to trade live.", "WARNING")
             finally:
                 self._in_flight_symbols.discard(norm_sym)
 

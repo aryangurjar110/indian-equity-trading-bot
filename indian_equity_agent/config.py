@@ -40,7 +40,7 @@ class RiskConfig(BaseModel):
     max_spread_pct: float = Field(default=0.0025, description="Max 0.25% bid-ask spread allowed")
     max_volume_pct_per_bar: float = Field(default=0.01, description="Max 1% of 15m bar volume to prevent market impact")
     consecutive_api_failure_limit: int = Field(default=3, description="Triggers kill switch after 3 API failures")
-    max_rejected_orders_window: int = Field(default=3, description="Max rejected orders in 5m before halt")
+    max_rejected_orders_window: int = Field(default=5, description="Max rejected orders in 5m before halt")
 
 
 class AIConfig(BaseModel):

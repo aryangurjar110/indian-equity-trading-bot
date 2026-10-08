@@ -17,9 +17,9 @@ def test_indian_market_calendar_hours():
     assert IndianMarketCalendar.is_entry_allowed(dt_open) is True
     assert IndianMarketCalendar.is_squareoff_time(dt_open) is False
 
-    # Tuesday at 09:16 AM IST (Market open, but early 5-min noise filter forbids entry)
-    dt_early = IST.localize(datetime(2026, 9, 22, 9, 16, 0))
-    assert IndianMarketCalendar.is_market_open(dt_early) is True
+    # Tuesday at 09:14 AM IST (Pre-market / before open, entry forbidden)
+    dt_early = IST.localize(datetime(2026, 9, 22, 9, 14, 0))
+    assert IndianMarketCalendar.is_market_open(dt_early) is False
     assert IndianMarketCalendar.is_entry_allowed(dt_early) is False
 
     # Tuesday at 15:16 PM IST (Market open, but square-off triggered)

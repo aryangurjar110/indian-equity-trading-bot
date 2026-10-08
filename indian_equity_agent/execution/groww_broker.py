@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import requests
@@ -359,6 +360,7 @@ class GrowwBroker(BaseBroker):
         groww_tx_type = "BUY" if order.side == OrderSide.BUY else "SELL"
         groww_order_type = "MARKET" if order.order_type == OrderType.MARKET else "LIMIT"
         groww_product = "MIS" if order.product == ProductType.MIS else "CNC"
+        order_ref_id = f"g{uuid.uuid4().hex[:15]}"
 
         if client:
             try:
@@ -372,12 +374,13 @@ class GrowwBroker(BaseBroker):
                     trading_symbol=clean_symbol,
                     transaction_type=groww_tx_type,
                     price=order.price if groww_order_type == "LIMIT" else 0.0,
+                    order_reference_id=order_ref_id,
                 )
                 order_id = res.get("groww_order_id") or res.get("order_id") or f"GW_{int(datetime.now().timestamp())}"
                 order.order_id = str(order_id)
                 order.status = OrderStatus.SUBMITTED
                 self.kill_switch.record_api_success()
-                logger.info(f"Order successfully submitted to Groww: ID {order.order_id} ({clean_symbol})")
+                logger.info(f"Order successfully submitted to Groww: ID {order.order_id} ({clean_symbol}, ref: {order_ref_id})")
                 return order
             except Exception as e:
                 err_str = str(e).lower()
@@ -388,6 +391,7 @@ class GrowwBroker(BaseBroker):
                     new_client = self._ensure_client()
                     if new_client:
                         try:
+                            retry_ref_id = f"g{uuid.uuid4().hex[:15]}"
                             res = new_client.place_order(
                                 validity="DAY",
                                 exchange="NSE",
@@ -398,12 +402,13 @@ class GrowwBroker(BaseBroker):
                                 trading_symbol=clean_symbol,
                                 transaction_type=groww_tx_type,
                                 price=order.price if groww_order_type == "LIMIT" else 0.0,
+                                order_reference_id=retry_ref_id,
                             )
                             order_id = res.get("groww_order_id") or res.get("order_id") or f"GW_{int(datetime.now().timestamp())}"
                             order.order_id = str(order_id)
                             order.status = OrderStatus.SUBMITTED
                             self.kill_switch.record_api_success()
-                            logger.info(f"Order successfully submitted to Groww after token refresh: ID {order.order_id} ({clean_symbol})")
+                            logger.info(f"Order successfully submitted to Groww after token refresh: ID {order.order_id} ({clean_symbol}, ref: {retry_ref_id})")
                             return order
                         except Exception as retry_err:
                             e = retry_err
@@ -430,6 +435,7 @@ class GrowwBroker(BaseBroker):
             "quantity": order.quantity,
             "product": groww_product,
             "validity": "DAY",
+            "order_reference_id": order_ref_id,
         }
         if order.price > 0 and groww_order_type == "LIMIT":
             payload["price"] = order.price

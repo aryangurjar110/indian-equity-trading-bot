@@ -106,6 +106,10 @@ class KillSwitch:
 
     def record_rejected_order(self, symbol: str, reason: str) -> None:
         """Tracks consecutive rejected orders."""
+        err_lower = (reason or "").lower()
+        if "duplicate order" in err_lower or "reference id" in err_lower:
+            logger.warning(f"Duplicate order reference id rejection on {symbol} ignored by kill switch counter: {reason}")
+            return
         self._consecutive_rejected_orders += 1
         if self._consecutive_rejected_orders >= settings.risk.max_rejected_orders_window:
             self.trigger(f"Spike in rejected orders ({self._consecutive_rejected_orders} consecutive): {reason} on {symbol}")

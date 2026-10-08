@@ -37,6 +37,9 @@ def test_groww_broker_place_order_success(mock_request):
     mock_request.return_value = mock_resp
 
     broker = GrowwBroker(api_key="key", access_token="token")
+    mock_client = MagicMock()
+    mock_client.place_order.return_value = {"order_id": "GROWW_ORD_98765", "status": "OPEN"}
+    broker._client = mock_client
     order = Order(
         order_id="LOCAL_1",
         symbol="INFY",
@@ -50,6 +53,7 @@ def test_groww_broker_place_order_success(mock_request):
     result = broker.place_order(order)
     assert result.status == OrderStatus.SUBMITTED
     assert result.order_id == "GROWW_ORD_98765"
+    assert "order_reference_id" in mock_client.place_order.call_args[1]
 
 
 @patch("requests.request")
@@ -64,6 +68,9 @@ def test_groww_broker_order_rejection_on_api_error(mock_request):
 
     ks = KillSwitch()
     broker = GrowwBroker(api_key="key", access_token="token", kill_switch=ks)
+    mock_client = MagicMock()
+    mock_client.place_order.side_effect = Exception("Insufficient funds in Groww account")
+    broker._client = mock_client
     order = Order(
         order_id="LOCAL_2",
         symbol="TCS",
