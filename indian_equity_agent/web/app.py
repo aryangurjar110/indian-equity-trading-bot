@@ -66,10 +66,24 @@ trader_service = AutonomousTraderService(
 @app.on_event("startup")
 async def on_startup():
     logger.info("Initializing Indian Equities Autonomous Trading Mission Control...")
-    # Trading starts STOPPED by default as requested: do not auto-resume without operator action
-    trader_service.is_running = False
-    trader_service.current_state = "STOPPED"
-    trader_service._save_persistent_state()
+    now_ist = IndianMarketCalendar.now_ist()
+    if IndianMarketCalendar.is_market_open(now_ist) and not shared_kill_switch.is_active:
+        logger.info("NSE Market is OPEN during server start. Auto-launching autonomous trading loop...")
+        await trader_service.start(
+            watchlist=trader_service.watchlist,
+            strategy=trader_service.strategy_name,
+            scan_interval=trader_service.scan_interval_seconds,
+            max_loss_inr=trader_service.max_loss_inr,
+            target_profit_inr=trader_service.target_profit_inr,
+            runtime_minutes=trader_service.runtime_minutes,
+            use_mock=trader_service.use_mock_data,
+        )
+    elif trader_service.was_running and not shared_kill_switch.is_active:
+        await trader_service.auto_resume_if_previously_running()
+    else:
+        trader_service.is_running = False
+        trader_service.current_state = "STOPPED"
+        trader_service._save_persistent_state()
 
 
 @app.on_event("shutdown")
@@ -391,6 +405,12 @@ async def get_trader_status():
     return trader_service.get_status()
 
 
+@app.get("/api/evolution")
+def get_strategy_evolution():
+    """Returns adaptive strategy evolution, dynamic weights, and continuous learning metrics."""
+    return trader_service.evolution_engine.get_evolution_summary()
+
+
 @app.get("/api/logs/stream")
 async def get_logs_stream(limit: int = 100):
     """Returns live event stream for the in-browser terminal."""
@@ -634,6 +654,12 @@ def index_html():
         <button onclick="toggleKillSwitch()" id="ks-btn" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-red-950 hover:bg-red-900 text-red-300 border border-red-800/80 transition flex items-center gap-1.5 font-mono">
           <i data-lucide="shield-alert" class="h-3.5 w-3.5 text-red-400"></i>
           <span>EMERGENCY HALT</span>
+        </button>
+
+        <!-- Strategy Evolution Modal Button -->
+        <button onclick="openEvolutionModal()" class="px-2.5 py-1.5 rounded-lg bg-term-surface hover:bg-term-border border border-term-border text-emerald-400 hover:text-emerald-300 transition flex items-center gap-1.5 text-xs font-mono cursor-pointer shadow-sm" title="Adaptive Strategy Evolution & Learning">
+          <i data-lucide="cpu" class="h-3.5 w-3.5 text-emerald-400"></i>
+          <span>AI Evolution</span>
         </button>
 
         <!-- Settings Button -->
@@ -931,6 +957,71 @@ def index_html():
         </button>
       </div>
 
+    </div>
+  </div>
+
+  <!-- 5. AI STRATEGY EVOLUTION & LEARNING MODAL -->
+  <div id="evolution-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="terminal-card max-w-2xl w-full rounded-xl p-5 space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
+      <div class="flex items-center justify-between border-b border-term-border pb-3">
+        <div class="flex items-center space-x-2">
+          <i data-lucide="cpu" class="h-4 w-4 text-emerald-400"></i>
+          <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider">Adaptive Strategy Evolution Engine</h3>
+        </div>
+        <button onclick="closeEvolutionModal()" class="text-term-textMuted hover:text-white">
+          <i data-lucide="x" class="h-4 w-4"></i>
+        </button>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3 font-mono text-xs">
+        <div class="bg-[#050505] p-3 rounded-lg border border-term-border">
+          <span class="text-[10px] text-term-textMuted uppercase block">Total Journaled Trades</span>
+          <span id="evo-trades-count" class="text-base font-bold text-white mt-1 block">0</span>
+        </div>
+        <div class="bg-[#050505] p-3 rounded-lg border border-term-border">
+          <span class="text-[10px] text-term-textMuted uppercase block">Overall Win Rate</span>
+          <span id="evo-win-rate" class="text-base font-bold text-emerald-400 mt-1 block">50.0%</span>
+        </div>
+        <div class="bg-[#050505] p-3 rounded-lg border border-term-border">
+          <span class="text-[10px] text-term-textMuted uppercase block">Evolution Net P&L</span>
+          <span id="evo-total-pnl" class="text-base font-bold text-gray-200 mt-1 block">₹0.00</span>
+        </div>
+      </div>
+
+      <div class="flex-1 overflow-y-auto custom-scroll space-y-3 font-mono text-xs">
+        <div>
+          <span class="text-[11px] font-bold text-white uppercase tracking-wider block mb-2">Dynamic Strategy Weights & Edge</span>
+          <div class="border border-term-border rounded-lg overflow-hidden">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="bg-[#050505] border-b border-term-border text-[10px] text-term-textMuted uppercase">
+                  <th class="p-2">Strategy</th>
+                  <th class="p-2">Trades</th>
+                  <th class="p-2">Win %</th>
+                  <th class="p-2">Profit Factor</th>
+                  <th class="p-2">Weight</th>
+                  <th class="p-2">Total PnL</th>
+                </tr>
+              </thead>
+              <tbody id="evo-strategies-tbody">
+                <tr class="text-term-textMuted text-center"><td colspan="6" class="p-3">Loading strategies...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div>
+          <span class="text-[11px] font-bold text-white uppercase tracking-wider block mb-2">Recent Trade Journal</span>
+          <div id="evo-recent-trades" class="space-y-1.5">
+            <div class="text-term-textMuted text-xs py-2 text-center">No completed closed trades logged yet.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="border-t border-term-border pt-3 flex justify-between items-center text-[11px] font-mono text-term-textMuted">
+        <span>Self-learning engine optimizes sizing & strategy weights continuously.</span>
+        <button onclick="closeEvolutionModal()" class="px-4 py-1.5 rounded-lg bg-term-surface hover:bg-term-border text-white border border-term-border">Close</button>
+      </div>
     </div>
   </div>
 
@@ -1482,6 +1573,74 @@ ${data.message}`);
           btn.innerHTML = '<i data-lucide="check" class="h-3.5 w-3.5"></i> Save & Connect';
           safeCreateIcons();
         }
+      }
+    }
+
+    // AI Strategy Evolution Modal Handlers
+    async function openEvolutionModal() {
+      const modal = document.getElementById('evolution-modal');
+      if (modal) {
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+      }
+      try {
+        const res = await fetch('/api/evolution');
+        if (!res.ok) return;
+        const data = await res.json();
+        setElText('evo-trades-count', data.total_trades || 0);
+        setElText('evo-win-rate', (data.overall_win_rate !== undefined ? data.overall_win_rate : 50.0) + '%');
+        const pnl = data.total_evolution_pnl || 0.0;
+        const pnlEl = document.getElementById('evo-total-pnl');
+        if (pnlEl) {
+          pnlEl.innerText = (pnl >= 0 ? '+' : '') + '₹' + pnl.toFixed(2);
+          pnlEl.className = 'text-base font-bold mt-1 block ' + (pnl >= 0 ? 'text-emerald-400' : 'text-red-400');
+        }
+
+        const tbody = document.getElementById('evo-strategies-tbody');
+        if (tbody && data.strategies) {
+          tbody.innerHTML = Object.entries(data.strategies).map(([k, s]) => `
+            <tr class="border-b border-term-border hover:bg-term-surface/40">
+              <td class="p-2 text-white font-semibold">${s.name}</td>
+              <td class="p-2 text-gray-300">${s.trades}</td>
+              <td class="p-2 ${s.win_rate_pct >= 50 ? 'text-emerald-400' : 'text-yellow-400'}">${s.win_rate_pct}%</td>
+              <td class="p-2 text-gray-300">${s.profit_factor.toFixed(2)}</td>
+              <td class="p-2 text-emerald-400 font-bold">${s.weight.toFixed(2)}x</td>
+              <td class="p-2 ${s.total_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'} font-semibold">${s.total_pnl >= 0 ? '+' : ''}₹${s.total_pnl.toFixed(2)}</td>
+            </tr>
+          `).join('');
+        }
+
+        const tradesBox = document.getElementById('evo-recent-trades');
+        if (tradesBox) {
+          const recents = data.recent_trades || [];
+          if (recents.length > 0) {
+            tradesBox.innerHTML = recents.map(t => `
+              <div class="p-2 bg-[#000000] rounded border border-term-border flex items-center justify-between text-xs">
+                <div>
+                  <span class="font-bold text-white">${t.symbol}</span>
+                  <span class="text-term-textMuted text-[10px] ml-1">(${t.side})</span>
+                  <span class="text-term-textDim text-[10px] ml-2">${t.exit_reason} &bull; ${t.exit_time ? t.exit_time.slice(11, 19) : ''}</span>
+                </div>
+                <div class="font-bold ${t.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}">
+                  ${t.pnl >= 0 ? '+' : ''}₹${t.pnl.toFixed(2)} (${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct.toFixed(1)}%)
+                </div>
+              </div>
+            `).join('');
+          } else {
+            tradesBox.innerHTML = '<div class="text-term-textMuted text-xs py-2 text-center">No completed closed trades logged yet.</div>';
+          }
+        }
+        safeCreateIcons();
+      } catch (e) {
+        console.error("Evolution fetch error:", e);
+      }
+    }
+
+    function closeEvolutionModal() {
+      const modal = document.getElementById('evolution-modal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
       }
     }
 

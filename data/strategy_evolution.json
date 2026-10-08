@@ -1,0 +1,76 @@
+{
+  "strategy_stats": {
+    "trend_following": {
+      "name": "Trend Following (Dual EMA + Supertrend)",
+      "trades_count": 12,
+      "wins": 0,
+      "losses": 12,
+      "total_pnl": 0.0,
+      "gross_profit": 0.0,
+      "gross_loss": 0.0,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "current_streak": -12,
+      "weight": 0.2,
+      "last_updated": "2026-10-08T14:41:51.918746+05:30"
+    },
+    "momentum_breakout": {
+      "name": "Momentum Breakout (Surge)",
+      "trades_count": 0,
+      "wins": 0,
+      "losses": 0,
+      "total_pnl": 0.0,
+      "gross_profit": 0.0,
+      "gross_loss": 0.0,
+      "win_rate": 0.5,
+      "profit_factor": 1.0,
+      "current_streak": 0,
+      "weight": 1.15,
+      "last_updated": "2026-10-08T14:38:00.432633+05:30"
+    },
+    "mean_reversion": {
+      "name": "Mean Reversion (Oversold/Overbought)",
+      "trades_count": 0,
+      "wins": 0,
+      "losses": 0,
+      "total_pnl": 0.0,
+      "gross_profit": 0.0,
+      "gross_loss": 0.0,
+      "win_rate": 0.5,
+      "profit_factor": 1.0,
+      "current_streak": 0,
+      "weight": 0.95,
+      "last_updated": "2026-10-08T14:38:00.432633+05:30"
+    },
+    "volatility_breakout": {
+      "name": "Volatility Breakout (Squeeze)",
+      "trades_count": 0,
+      "wins": 0,
+      "losses": 0,
+      "total_pnl": 0.0,
+      "gross_profit": 0.0,
+      "gross_loss": 0.0,
+      "win_rate": 0.5,
+      "profit_factor": 1.0,
+      "current_streak": 0,
+      "weight": 1.05,
+      "last_updated": "2026-10-08T14:38:00.432633+05:30"
+    },
+    "vwap_reversion": {
+      "name": "VWAP Institutional Reversion",
+      "trades_count": 0,
+      "wins": 0,
+      "losses": 0,
+      "total_pnl": 0.0,
+      "gross_profit": 0.0,
+      "gross_loss": 0.0,
+      "win_rate": 0.5,
+      "profit_factor": 1.0,
+      "current_streak": 0,
+      "weight": 1.2,
+      "last_updated": "2026-10-08T14:38:00.432633+05:30"
+    }
+  },
+  "total_recorded_trades": 22,
+  "last_evolved_at": "2026-10-08T14:41:51.918746+05:30"
+}

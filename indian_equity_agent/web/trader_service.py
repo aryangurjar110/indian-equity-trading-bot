@@ -49,6 +49,8 @@ from ..strategies.trend_following import TrendFollowingStrategy
 from ..strategies.momentum_breakout import MomentumBreakoutStrategy
 from ..strategies.mean_reversion import MeanReversionStrategy
 from ..strategies.volatility_breakout import VolatilityBreakoutStrategy
+from ..strategies.vwap_reversion import VWAPReversionStrategy
+from ..strategies.evolution import StrategyEvolutionEngine
 
 logger = logging.getLogger("indian_equity_agent.trader_service")
 
@@ -107,7 +109,9 @@ class AutonomousTraderService:
             "momentum_breakout": MomentumBreakoutStrategy(),
             "mean_reversion": MeanReversionStrategy(),
             "volatility_breakout": VolatilityBreakoutStrategy(),
+            "vwap_reversion": VWAPReversionStrategy(),
         }
+        self.evolution_engine = StrategyEvolutionEngine()
 
         # Runner state
         self.state_file = state_file if state_file is not None else (settings.project_root / "data" / "trader_state.json")
@@ -292,7 +296,17 @@ class AutonomousTraderService:
                     f"Volatility Compression Squeeze (BB Width: {bb_width:.3f} <= 0.045)",
                 )
 
-            # 2. Momentum & High Volume Breakout Regime
+            # 2. VWAP Institutional Overextension Mean Reversion Regime
+            vwap = snap.get("vwap", close)
+            vwap_dev = abs(close - vwap) / vwap if vwap > 0 else 0.0
+            if vwap_dev >= 0.012 and (rsi <= 35 or rsi >= 65) and vol_surge >= 1.15:
+                return (
+                    self.strategies["vwap_reversion"],
+                    "VWAP Institutional Reversion",
+                    f"Institutional Overextension from VWAP ({vwap_dev*100:.1f}%, RSI: {rsi:.1f}, Vol: {vol_surge:.1f}x)",
+                )
+
+            # 3. Momentum & High Volume Breakout Regime
             if vol_surge >= 1.5:
                 return (
                     self.strategies["momentum_breakout"],
@@ -300,7 +314,7 @@ class AutonomousTraderService:
                     f"Volume Breakout Surge ({vol_surge:.2f}x 20-SMA Volume)",
                 )
 
-            # 3. Range-bound Mean Reversion Regime
+            # 4. Range-bound Mean Reversion Regime
             if adx < 22 and (rsi <= 32 or rsi >= 68):
                 return (
                     self.strategies["mean_reversion"],
@@ -308,7 +322,7 @@ class AutonomousTraderService:
                     f"Mean Reversion Regime (ADX {adx:.1f} < 22, RSI {rsi:.1f})",
                 )
 
-            # 4. Directional Trend Following Regime
+            # 5. Directional Trend Following Regime
             return (
                 self.strategies["trend_following"],
                 "Trend Following (Dual EMA + Supertrend)",
@@ -324,7 +338,9 @@ class AutonomousTraderService:
 
     def _get_strategy(self, name: str):
         name = name.lower()
-        if "momentum" in name:
+        if "vwap" in name:
+            return self.strategies["vwap_reversion"]
+        elif "momentum" in name:
             return self.strategies["momentum_breakout"]
         elif "mean" in name:
             return self.strategies["mean_reversion"]
@@ -569,10 +585,11 @@ class AutonomousTraderService:
             if current_price <= 0:
                 current_price = pos.average_entry_price
 
+            is_sqoff = IndianMarketCalendar.is_squareoff_time(now_ist)
             exit_order = self.exit_manager.evaluate_position_exits(
                 position=pos,
                 current_price=current_price,
-                force_eod_squareoff=False,
+                force_eod_squareoff=is_sqoff,
                 current_time=now_ist,
             )
 
@@ -583,7 +600,7 @@ class AutonomousTraderService:
                     self._in_flight_symbols.add(norm_sym)
                     try:
                         clean_sym = _normalize_symbol(sym)
-                        filled = self.broker.place_order(exit_order)
+                        filled = await asyncio.to_thread(self.broker.place_order, exit_order)
                         exit_p = current_price if current_price > 0 else pos.average_entry_price
                         pnl = (exit_p - pos.average_entry_price) * pos.quantity if pos.quantity > 0 else (pos.average_entry_price - exit_p) * abs(pos.quantity)
                         pnl_str = f"+₹{pnl:,.2f}" if pnl >= 0 else f"-₹{abs(pnl):,.2f}"
@@ -610,6 +627,21 @@ class AutonomousTraderService:
                             self.accumulated_brokerage += costs["brokerage"]
                             self.accumulated_taxes += (costs["total_charges"] - costs["brokerage"])
                             self._save_persistent_state()
+
+                            # Evolve strategy metrics on trade completion
+                            side_str = "BUY" if pos.quantity > 0 else "SELL"
+                            exit_reason = "15:15_MIS_SQUAREOFF" if is_sqoff else "STOP_OR_TARGET"
+                            self.evolution_engine.record_completed_trade(
+                                symbol=clean_sym,
+                                strategy_key=self.current_strategy_label or "trend_following",
+                                side=side_str,
+                                quantity=qty,
+                                entry_price=pos.average_entry_price,
+                                exit_price=exit_p,
+                                pnl=pnl,
+                                exit_reason=exit_reason,
+                                product=pos.product.value if hasattr(pos.product, "value") else str(pos.product),
+                            )
                     finally:
                         self._in_flight_symbols.discard(norm_sym)
 
@@ -724,6 +756,21 @@ class AutonomousTraderService:
             product=order_product,
         )
 
+        if qty > 0:
+            strat_key = "vwap_reversion" if "vwap" in strat_label.lower() else (
+                "momentum_breakout" if "momentum" in strat_label.lower() else (
+                    "mean_reversion" if "mean" in strat_label.lower() else (
+                        "volatility_breakout" if "volatility" in strat_label.lower() else "trend_following"
+                    )
+                )
+            )
+            macro_sent = sym_news.get("market_sentiment", "BULLISH")
+            risk_mult = self.evolution_engine.get_risk_multiplier(strat_key, market_sentiment=macro_sent)
+            if risk_mult != 1.0:
+                adj_qty = max(1, int(round(qty * risk_mult)))
+                logger.info(f"Evolution risk multiplier ({risk_mult:.2f}x) scaled qty {qty} -> {adj_qty} for {norm_sym}")
+                qty = adj_qty
+
         if qty <= 0:
             self._log("RISK", f"⚠️ Capital sizing for {norm_sym} (₹{last_price:.2f}): 0 shares ({size_reason} | Avail Cash: ₹{portfolio.cash:,.2f})", "WARNING")
             logger.info(f"Position sizing for {symbol} returned qty=0: {size_reason}")
@@ -828,7 +875,6 @@ class AutonomousTraderService:
             pnl_str = f"+₹{pnl:,.2f}" if pnl >= 0 else f"-₹{abs(pnl):,.2f}"
             self._log("EXIT", f"👤 MANUAL EXIT: {clean_name} | {abs(pos.quantity)} shares @ ₹{exit_p:,.2f} | P&L: {pnl_str}", "INFO")
 
-            # Track statutory taxes & brokerage for manual exit
             if filled.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
                 exit_p = pos.current_price if pos.current_price > 0 else pos.average_entry_price
                 qty = abs(pos.quantity)
@@ -845,7 +891,23 @@ class AutonomousTraderService:
                 self.accumulated_taxes += (costs["total_charges"] - costs["brokerage"])
                 self._save_persistent_state()
 
-            return {"status": "SUCCESS", "order_id": filled.order_id}
+                # Evolve strategy metrics on manual exit
+                side_str = "BUY" if pos.quantity > 0 else "SELL"
+                self.evolution_engine.record_completed_trade(
+                    symbol=clean_name,
+                    strategy_key="manual_exit",
+                    side=side_str,
+                    quantity=qty,
+                    entry_price=pos.average_entry_price,
+                    exit_price=exit_p,
+                    pnl=pnl,
+                    exit_reason="MANUAL",
+                    product=pos.product.value if hasattr(pos.product, "value") else str(pos.product),
+                )
+                return {"status": "SUCCESS", "order_id": filled.order_id, "message": f"Successfully closed position for {clean_name}"}
+            else:
+                self._log("EXIT", f"❌ MANUAL EXIT FAILED: {clean_name} | {filled.rejection_reason}", "ERROR")
+                return {"status": "ERROR", "order_id": filled.order_id, "message": filled.rejection_reason or "Order rejected by broker"}
         finally:
             self._in_flight_symbols.discard(norm_target)
 
@@ -893,6 +955,7 @@ class AutonomousTraderService:
             "accumulated_brokerage": round(self.accumulated_brokerage, 2),
             "accumulated_taxes": round(self.accumulated_taxes, 2),
             "last_scan_at": self.last_scan_at.strftime("%H:%M:%S IST") if self.last_scan_at else "Never",
+            "evolution": self.evolution_engine.get_evolution_summary(),
         }
 
     def get_logs(self, limit: int = 100) -> List[Dict[str, str]]:

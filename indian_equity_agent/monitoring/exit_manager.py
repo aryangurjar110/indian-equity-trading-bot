@@ -118,11 +118,19 @@ class ExitManager:
         initial_risk = abs(position.average_entry_price - position.stop_loss) if position.stop_loss > 0 else 0.0
         if is_long and initial_risk > 0:
             gain = current_price - position.average_entry_price
-            # Breakeven lock
+            # Breakeven lock for long positions
             if gain >= self.breakeven_trigger_r * initial_risk:
                 breakeven_sl = round(position.average_entry_price + (0.1 * initial_risk), 2)
                 if breakeven_sl > position.stop_loss:
-                    logger.info(f"🔒 Moving SL to Breakeven+ for {position.symbol}: Old SL ₹{position.stop_loss:.2f} -> New SL ₹{breakeven_sl:.2f}")
+                    logger.info(f"🔒 Moving SL to Breakeven+ for {position.symbol} Long: Old SL ₹{position.stop_loss:.2f} -> New SL ₹{breakeven_sl:.2f}")
+                    position.stop_loss = breakeven_sl
+        elif not is_long and initial_risk > 0:
+            gain = position.average_entry_price - current_price
+            # Breakeven lock for short positions
+            if gain >= self.breakeven_trigger_r * initial_risk:
+                breakeven_sl = round(position.average_entry_price - (0.1 * initial_risk), 2)
+                if position.stop_loss == 0 or breakeven_sl < position.stop_loss:
+                    logger.info(f"🔒 Moving SL to Breakeven+ for {position.symbol} Short: Old SL ₹{position.stop_loss:.2f} -> New SL ₹{breakeven_sl:.2f}")
                     position.stop_loss = breakeven_sl
 
         return None
