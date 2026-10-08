@@ -74,6 +74,8 @@ class GrowwBroker(BaseBroker):
         self._cached_portfolio_ts: float = 0.0
         self._cached_wallet_margins: Optional[Dict[str, Any]] = None
         self._cached_wallet_ts: float = 0.0
+        self._cached_positions: Optional[Dict[str, Position]] = None
+        self._cached_positions_ts: float = 0.0
         self._last_auth_fail_ts: float = 0.0
         self._ensure_client()
 
@@ -351,6 +353,7 @@ class GrowwBroker(BaseBroker):
         """Submits regular order to NSE via Groww."""
         self._cached_portfolio_state = None
         self._cached_wallet_margins = None
+        self._cached_positions = None
         client = self._ensure_client()
         clean_symbol = order.symbol.replace(".NS", "").replace(".BO", "").strip().upper()
         groww_tx_type = "BUY" if order.side == OrderSide.BUY else "SELL"
@@ -446,6 +449,7 @@ class GrowwBroker(BaseBroker):
     def cancel_order(self, order_id: str) -> bool:
         self._cached_portfolio_state = None
         self._cached_wallet_margins = None
+        self._cached_positions = None
         client = self._ensure_client()
         if client:
             try:
@@ -460,7 +464,11 @@ class GrowwBroker(BaseBroker):
             return False
 
     def get_positions(self) -> Dict[str, Position]:
-        """Fetches net positions from Groww."""
+        """Fetches net positions from Groww with 20s TTL cache."""
+        now_ts = time.time()
+        if self._cached_positions is not None and (now_ts - self._cached_positions_ts < 20.0):
+            return self._cached_positions
+
         positions: Dict[str, Position] = {}
         client = self._ensure_client()
         if client:
@@ -524,13 +532,20 @@ class GrowwBroker(BaseBroker):
                     )
                     pos.unrealized_pnl = round(unrealized, 2)
                     positions[sym] = pos
-                return positions
+                if positions or not self._cached_positions:
+                    self._cached_positions = positions
+                    self._cached_positions_ts = now_ts
+                return self._cached_positions or positions
             except Exception as e:
+                err_str = str(e).lower()
                 logger.warning(f"Error fetching Groww positions via SDK: {e}")
+                if "rate limit" in err_str or "429" in err_str:
+                    if self._cached_positions is not None:
+                        return self._cached_positions
 
         # Fallback via direct REST
         if not self.access_token:
-            return positions
+            return self._cached_positions or positions
         try:
             data = self._request("GET", "positions/user", timeout=5.0, record_failure=False)
             net_list = data.get("positions", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
@@ -590,12 +605,15 @@ class GrowwBroker(BaseBroker):
                 )
                 pos.unrealized_pnl = round(unrealized, 2)
                 positions[sym] = pos
+            if positions or not self._cached_positions:
+                self._cached_positions = positions
+                self._cached_positions_ts = now_ts
         except Exception as e:
             if "authentication" in str(e).lower() or "401" in str(e) or "403" in str(e):
                 raise
             logger.debug(f"Positions query notice: {e}")
 
-        return positions
+        return self._cached_positions or positions
 
     def get_orders(self) -> List[Order]:
         client = self._ensure_client()

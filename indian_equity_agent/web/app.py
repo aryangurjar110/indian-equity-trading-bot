@@ -138,11 +138,17 @@ class SettingsUpdateRequest(BaseModel):
     target_profit_inr: Optional[float] = None
 
 
-# REST API Endpoints
+_cached_status_dict = None
+_cached_status_ts = 0.0
 
 @app.get("/api/status")
 def get_status():
     """Returns real-time system, market, and runner status with exact statutory charges."""
+    global _cached_status_dict, _cached_status_ts
+    now_ts = time.time()
+    if _cached_status_dict is not None and (now_ts - _cached_status_ts < 4.0):
+        return _cached_status_dict
+
     try:
         now_ist = IndianMarketCalendar.now_ist()
         portfolio = shared_broker.get_portfolio_state()
@@ -261,6 +267,9 @@ def get_status():
                 if pos.quantity != 0
             ],
         }
+        _cached_status_dict = res
+        _cached_status_ts = now_ts
+        return res
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
@@ -1476,8 +1485,8 @@ ${data.message}`);
       safeCreateIcons();
       updateStatus();
       updateLogStream();
-      setInterval(updateStatus, 2500);
-      setInterval(updateLogStream, 2000);
+      setInterval(updateStatus, 5000);
+      setInterval(updateLogStream, 3000);
     }
 
     if (document.readyState === 'loading') {
