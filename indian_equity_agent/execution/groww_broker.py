@@ -401,7 +401,7 @@ class GrowwBroker(BaseBroker):
 
                 if "unregistered ip" in err_str or "registered ip" in err_str or "whitelist" in err_str or "ga005" in err_str:
                     self._ip_unregistered = True
-                    live_ip = self._get_live_network_ip()
+                    live_ip = self._public_ip or self._get_live_network_ip()
                     err_clean = f"Groww rejected order: Unregistered IP address (GA005). Your active connection IP is {live_ip}. Please whitelist {live_ip} in Groww -> Settings -> Trading APIs."
                 else:
                     err_clean = str(e)
@@ -464,15 +464,17 @@ class GrowwBroker(BaseBroker):
                     if qty == 0:
                         continue
                     sym = item.get("trading_symbol", item.get("symbol", ""))
+                    avg_p = _to_float(item.get("average_price") or item.get("avg_price") or 0.0)
+                    cur_p = _to_float(item.get("last_price") or item.get("ltp") or item.get("lastPrice") or item.get("lastTradedPrice") or item.get("close_price") or item.get("closePrice") or avg_p)
                     positions[sym] = Position(
                         symbol=sym,
                         product=ProductType.MIS if item.get("product") == "MIS" else ProductType.CNC,
                         quantity=qty,
-                        average_entry_price=float(item.get("average_price", item.get("avg_price", 0.0))),
-                        current_price=float(item.get("last_price", item.get("ltp", 0.0))),
+                        average_entry_price=avg_p,
+                        current_price=cur_p,
                         stop_loss=0.0,
                         target_price=0.0,
-                        realized_pnl=float(item.get("realised_pnl", item.get("pnl", 0.0))),
+                        realized_pnl=_to_float(item.get("realised_pnl") or item.get("pnl") or 0.0),
                     )
                 return positions
             except Exception as e:
@@ -487,15 +489,17 @@ class GrowwBroker(BaseBroker):
                 if qty == 0:
                     continue
                 sym = item.get("trading_symbol", item.get("symbol", ""))
+                avg_p = _to_float(item.get("average_price") or item.get("avg_price") or 0.0)
+                cur_p = _to_float(item.get("last_price") or item.get("ltp") or item.get("lastPrice") or item.get("lastTradedPrice") or item.get("close_price") or item.get("closePrice") or avg_p)
                 positions[sym] = Position(
                     symbol=sym,
                     product=ProductType.MIS if item.get("product") == "MIS" else ProductType.CNC,
                     quantity=qty,
-                    average_entry_price=float(item.get("average_price", item.get("avg_price", 0.0))),
-                    current_price=float(item.get("last_price", item.get("ltp", 0.0))),
+                    average_entry_price=avg_p,
+                    current_price=cur_p,
                     stop_loss=0.0,
                     target_price=0.0,
-                    realized_pnl=float(item.get("realised_pnl", item.get("pnl", 0.0))),
+                    realized_pnl=_to_float(item.get("realised_pnl") or item.get("pnl") or 0.0),
                 )
         except Exception as e:
             if "authentication" in str(e).lower() or "401" in str(e) or "403" in str(e):

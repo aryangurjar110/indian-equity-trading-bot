@@ -35,9 +35,11 @@ class MockMarketDataSource(MarketDataSource):
     def get_historical_bars(
         self,
         symbol: str,
-        start_date: datetime,
-        end_date: datetime,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
         interval: str = "15m",
+        limit: Optional[int] = None,
+        **kwargs,
     ) -> List[Bar]:
         """Generates synthetic historical bars using geometric random walk."""
         bars: List[Bar] = []
@@ -45,6 +47,12 @@ class MockMarketDataSource(MarketDataSource):
         curr_price = base_price
         
         step_minutes = 15 if interval == "15m" else 1440
+        if end_date is None:
+            end_date = IndianMarketCalendar.now_ist()
+        if start_date is None:
+            days_back = 7 if limit and limit <= 5 else 30
+            start_date = end_date - timedelta(days=days_back)
+
         curr_dt = IndianMarketCalendar.to_ist(start_date)
         end_dt = IndianMarketCalendar.to_ist(end_date)
 
@@ -73,6 +81,9 @@ class MockMarketDataSource(MarketDataSource):
                 curr_price = close_p
 
             curr_dt += timedelta(minutes=step_minutes)
+
+        if limit is not None and limit > 0:
+            return bars[-limit:]
 
         return bars
 

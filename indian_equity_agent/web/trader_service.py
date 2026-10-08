@@ -540,9 +540,23 @@ class AutonomousTraderService:
             # Fetch latest price
             current_price = pos.current_price
             if current_price <= 0:
-                bars = self.data_source.get_historical_bars(sym, limit=1) if not self.use_mock_data else self.mock_source.get_historical_bars(sym, limit=1)
-                if bars:
-                    current_price = bars[-1].close
+                try:
+                    quote = (self.mock_source if self.use_mock_data else self.data_source).get_quote(sym)
+                    if quote and quote.last_price > 0:
+                        current_price = quote.last_price
+                except Exception:
+                    pass
+
+            if current_price <= 0:
+                try:
+                    bars = (self.mock_source if self.use_mock_data else self.data_source).get_historical_bars(sym, limit=1)
+                    if bars:
+                        current_price = bars[-1].close
+                except Exception:
+                    pass
+
+            if current_price <= 0:
+                current_price = pos.average_entry_price
 
             exit_order = self.exit_manager.evaluate_position_exits(
                 position=pos,

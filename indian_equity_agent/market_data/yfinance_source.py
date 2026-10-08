@@ -31,9 +31,11 @@ class YFinanceSource(MarketDataSource):
     def get_historical_bars(
         self,
         symbol: str,
-        start_date: datetime,
-        end_date: datetime,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
         interval: str = "1d",
+        limit: Optional[int] = None,
+        **kwargs,
     ) -> List[Bar]:
         """Fetch historical bars and convert to domain Bar models with fast TTL caching."""
         formatted_symbol = self._format_symbol(symbol)
@@ -43,7 +45,15 @@ class YFinanceSource(MarketDataSource):
         if cache_key in self._bars_cache:
             cached_time, cached_bars = self._bars_cache[cache_key]
             if now_ts - cached_time < self.cache_ttl_seconds and len(cached_bars) >= 20:
+                if limit is not None and limit > 0:
+                    return cached_bars[-limit:]
                 return cached_bars
+
+        if end_date is None:
+            end_date = IndianMarketCalendar.now_ist()
+        if start_date is None:
+            days_back = 7 if limit and limit <= 5 else max(30, (limit or 10) * 2)
+            start_date = end_date - timedelta(days=days_back)
 
         # Download data
         df = yf.download(
@@ -56,6 +66,23 @@ class YFinanceSource(MarketDataSource):
         )
 
         if df.empty:
+            # Fallback for limit=1: attempt quote snapshot to form a single bar
+            if limit == 1:
+                try:
+                    q = self.get_quote(symbol)
+                    return [
+                        Bar(
+                            symbol=symbol,
+                            timestamp=q.timestamp,
+                            open=q.last_price,
+                            high=q.last_price,
+                            low=q.last_price,
+                            close=q.last_price,
+                            volume=q.volume,
+                        )
+                    ]
+                except Exception:
+                    pass
             return []
 
         # Handle multi-index columns if present
@@ -98,6 +125,9 @@ class YFinanceSource(MarketDataSource):
 
         if len(bars) >= 20:
             self._bars_cache[cache_key] = (now_ts, bars)
+
+        if limit is not None and limit > 0:
+            return bars[-limit:]
 
         return bars
 

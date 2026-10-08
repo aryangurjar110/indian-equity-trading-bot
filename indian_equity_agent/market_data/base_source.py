@@ -15,9 +15,11 @@ class MarketDataSource(ABC):
     def get_historical_bars(
         self,
         symbol: str,
-        start_date: datetime,
-        end_date: datetime,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
         interval: str = "15m",
+        limit: Optional[int] = None,
+        **kwargs,
     ) -> List[Bar]:
         """Fetch historical bars for symbol."""
         pass
