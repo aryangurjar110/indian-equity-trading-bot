@@ -173,10 +173,6 @@ class GrowwBroker(BaseBroker):
             except Exception:
                 pass
 
-            # Only record kill-switch API failure if it's NOT a normal daily approval wait
-            last_err = self._last_auth_error or "Authentication failed"
-            if "approval" not in last_err.lower() and "authorisation" not in last_err.lower() and "forbidden" not in last_err.lower():
-                self.kill_switch.record_api_failure(last_err)
             return None
 
         return None
