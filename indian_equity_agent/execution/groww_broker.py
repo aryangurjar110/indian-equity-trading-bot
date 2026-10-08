@@ -490,17 +490,56 @@ class GrowwBroker(BaseBroker):
                     if qty == 0:
                         continue
                     sym = item.get("trading_symbol", item.get("symbol", ""))
-                    avg_p = _to_float(item.get("average_price") or item.get("avg_price") or 0.0)
-                    cur_p = _to_float(item.get("last_price") or item.get("ltp") or item.get("lastPrice") or item.get("lastTradedPrice") or item.get("close_price") or item.get("closePrice") or avg_p)
+                    avg_p = _to_float(
+                        item.get("net_price")
+                        or item.get("average_price")
+                        or item.get("avg_price")
+                        or item.get("credit_price")
+                        or item.get("debit_price")
+                        or item.get("buy_price")
+                        or item.get("sell_price")
+                        or 0.0
+                    )
+                    cur_p = _to_float(
+                        item.get("last_price")
+                        or item.get("ltp")
+                        or item.get("lastPrice")
+                        or item.get("lastTradedPrice")
+                        or item.get("close_price")
+                        or item.get("closePrice")
+                        or 0.0
+                    )
+                    if cur_p <= 0:
+                        try:
+                            from ..market_data.yfinance_source import YFinanceSource
+                            q = YFinanceSource().get_quote(sym)
+                            if q and q.last_price > 0:
+                                cur_p = q.last_price
+                        except Exception:
+                            pass
+
+                    if avg_p <= 0 and cur_p > 0:
+                        avg_p = cur_p
+
+                    # Calculate live unrealized P&L
+                    if avg_p > 0 and cur_p > 0:
+                        unrealized = (cur_p - avg_p) * qty if qty > 0 else (avg_p - cur_p) * abs(qty)
+                    else:
+                        unrealized = _to_float(item.get("unrealised_pnl") or item.get("pnl") or 0.0)
+
+                    sl = round(avg_p * 1.015, 2) if qty < 0 else (round(avg_p * 0.985, 2) if avg_p > 0 else 0.0)
+                    tgt = round(avg_p * 0.97, 2) if qty < 0 else (round(avg_p * 1.03, 2) if avg_p > 0 else 0.0)
+
                     positions[sym] = Position(
                         symbol=sym,
                         product=ProductType.MIS if item.get("product") == "MIS" else ProductType.CNC,
                         quantity=qty,
                         average_entry_price=avg_p,
                         current_price=cur_p,
-                        stop_loss=0.0,
-                        target_price=0.0,
-                        realized_pnl=_to_float(item.get("realised_pnl") or item.get("pnl") or 0.0),
+                        stop_loss=sl,
+                        target_price=tgt,
+                        unrealized_pnl=round(unrealized, 2),
+                        realized_pnl=_to_float(item.get("realised_pnl") or 0.0),
                     )
                 return positions
             except Exception as e:
@@ -517,16 +556,54 @@ class GrowwBroker(BaseBroker):
                 if qty == 0:
                     continue
                 sym = item.get("trading_symbol", item.get("symbol", ""))
-                avg_p = _to_float(item.get("average_price") or item.get("avg_price") or 0.0)
-                cur_p = _to_float(item.get("last_price") or item.get("ltp") or item.get("lastPrice") or item.get("lastTradedPrice") or item.get("close_price") or item.get("closePrice") or avg_p)
+                avg_p = _to_float(
+                    item.get("net_price")
+                    or item.get("average_price")
+                    or item.get("avg_price")
+                    or item.get("credit_price")
+                    or item.get("debit_price")
+                    or item.get("buy_price")
+                    or item.get("sell_price")
+                    or 0.0
+                )
+                cur_p = _to_float(
+                    item.get("last_price")
+                    or item.get("ltp")
+                    or item.get("lastPrice")
+                    or item.get("lastTradedPrice")
+                    or item.get("close_price")
+                    or item.get("closePrice")
+                    or 0.0
+                )
+                if cur_p <= 0:
+                    try:
+                        from ..market_data.yfinance_source import YFinanceSource
+                        q = YFinanceSource().get_quote(sym)
+                        if q and q.last_price > 0:
+                            cur_p = q.last_price
+                    except Exception:
+                        pass
+
+                if avg_p <= 0 and cur_p > 0:
+                    avg_p = cur_p
+
+                if avg_p > 0 and cur_p > 0:
+                    unrealized = (cur_p - avg_p) * qty if qty > 0 else (avg_p - cur_p) * abs(qty)
+                else:
+                    unrealized = _to_float(item.get("unrealised_pnl") or item.get("pnl") or 0.0)
+
+                sl = round(avg_p * 1.015, 2) if qty < 0 else (round(avg_p * 0.985, 2) if avg_p > 0 else 0.0)
+                tgt = round(avg_p * 0.97, 2) if qty < 0 else (round(avg_p * 1.03, 2) if avg_p > 0 else 0.0)
+
                 positions[sym] = Position(
                     symbol=sym,
                     product=ProductType.MIS if item.get("product") == "MIS" else ProductType.CNC,
                     quantity=qty,
                     average_entry_price=avg_p,
                     current_price=cur_p,
-                    stop_loss=0.0,
-                    target_price=0.0,
+                    stop_loss=sl,
+                    target_price=tgt,
+                    unrealized_pnl=round(unrealized, 2),
                     realized_pnl=_to_float(item.get("realised_pnl") or item.get("pnl") or 0.0),
                 )
         except Exception as e:

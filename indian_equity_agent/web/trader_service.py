@@ -529,6 +529,16 @@ class AutonomousTraderService:
         if not portfolio.positions:
             return
 
+        if self.cycles_completed % 4 == 0:
+            active_list = []
+            for s, p in portfolio.positions.items():
+                if p.quantity != 0:
+                    c_p = p.current_price if p.current_price > 0 else p.average_entry_price
+                    p_pnl = (c_p - p.average_entry_price) * p.quantity if p.quantity > 0 else (p.average_entry_price - c_p) * abs(p.quantity)
+                    active_list.append(f"{s} ({p.quantity} @ ₹{p.average_entry_price:,.2f} | LTP ₹{c_p:,.2f} | P&L: {'+' if p_pnl>=0 else ''}₹{p_pnl:,.2f})")
+            if active_list:
+                self._log("POSITIONS", f"📊 TRACKING POSITIONS: {', '.join(active_list)}", "INFO")
+
         for sym, pos in list(portfolio.positions.items()):
             if pos.quantity == 0:
                 continue
@@ -665,16 +675,20 @@ class AutonomousTraderService:
 
         # Generate Strategy Signal
         signal: StrategySignal = strat.generate_signal(symbol, df)
+        last_price = bars[-1].close
         if signal.action == "HOLD":
+            self._log("STRATEGY", f"🔍 {norm_sym} (₹{last_price:.2f}) [{strat_label}]: Signal HOLD (Awaiting breakout confirmation)", "INFO")
             return
 
         # Check entry window
         if not is_entry_allowed and not self.use_mock_data:
+            self._log("TIMING", f"⏳ {norm_sym}: Signal {signal.action} generated but outside entry window (09:15 - 15:15 IST)", "WARNING")
             return
 
         # Cash segment: only allow naked short sell during market hours as MIS
         is_market_open = IndianMarketCalendar.is_market_open(now_ist)
         if signal.action == "SELL" and not is_market_open and not self.use_mock_data:
+            self._log("TIMING", f"⏳ {norm_sym}: Intraday Short SELL requires active market hours", "WARNING")
             return
 
         # Real-time symbol news catalyst check (< 1ms)
@@ -693,7 +707,6 @@ class AutonomousTraderService:
 
         # 5. Position Sizing
         portfolio = self.broker.get_portfolio_state()
-        last_price = bars[-1].close
         order_product = ProductType.MIS if is_market_open else ProductType.CNC
         qty, risk_amt, size_reason = self.risk_engine.position_sizer.calculate_quantity(
             symbol=symbol,
@@ -705,6 +718,7 @@ class AutonomousTraderService:
         )
 
         if qty <= 0:
+            self._log("RISK", f"⚠️ Capital sizing for {norm_sym} (₹{last_price:.2f}): 0 shares ({size_reason} | Avail Cash: ₹{portfolio.cash:,.2f})", "WARNING")
             logger.info(f"Position sizing for {symbol} returned qty=0: {size_reason}")
             return
 
