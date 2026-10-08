@@ -13,6 +13,7 @@ import os
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import requests
 
@@ -55,6 +56,7 @@ class GrowwBroker(BaseBroker):
         api_secret: Optional[str] = None,
         access_token: Optional[str] = None,
         kill_switch: Optional[KillSwitch] = None,
+        cache_file: Optional[Path] = None,
     ):
         self.api_key = api_key or settings.broker.groww_api_key
         self.api_secret = api_secret or settings.broker.groww_api_secret
@@ -81,7 +83,7 @@ class GrowwBroker(BaseBroker):
         self._cached_positions: Optional[Dict[str, Position]] = None
         self._cached_positions_ts: float = 0.0
         self._last_auth_fail_ts: float = 0.0
-        self.cache_file = settings.data_dir / "groww_portfolio_cache.json"
+        self.cache_file = cache_file or (settings.data_dir / "groww_portfolio_cache.json")
         self._load_portfolio_cache()
         self._ensure_client()
 

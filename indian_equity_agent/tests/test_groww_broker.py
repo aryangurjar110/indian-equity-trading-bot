@@ -8,6 +8,13 @@ from indian_equity_agent.execution import create_broker
 from indian_equity_agent.core.models import Order, OrderSide, OrderStatus, ProductType, OrderType
 from indian_equity_agent.core.exceptions import BrokerConnectionError
 from indian_equity_agent.risk.kill_switch import KillSwitch
+from indian_equity_agent.config import settings
+
+
+@pytest.fixture(autouse=True)
+def isolate_portfolio_cache(tmp_path, monkeypatch):
+    """Ensures GrowwBroker in tests uses an isolated temporary cache file."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
 
 
 def test_groww_broker_factory():
