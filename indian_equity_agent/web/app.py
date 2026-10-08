@@ -170,11 +170,19 @@ def get_status():
         wallet_info = shared_broker.get_wallet_margins()
         trader_status = trader_service.get_status()
 
-        # Calculate open positions estimated roundtrip statutory charges (STT, GST, SEBI, Stamp Duty, NSE fees, Brokerage)
+        # Calculate open positions statutory charges & taxes with precision
         open_charges = 0.0
         open_brokerage = 0.0
         open_taxes = 0.0
+        open_incurred_charges = 0.0
+        open_projected_exit_charges = 0.0
+        open_stt = 0.0
+        open_exchange_charges = 0.0
+        open_gst = 0.0
+        open_stamp_duty = 0.0
+        open_sebi = 0.0
         total_unrealized_pnl = 0.0
+        enhanced_positions = []
 
         for pos in portfolio.positions.values():
             if pos.quantity != 0:
@@ -198,31 +206,82 @@ def get_status():
 
                 qty = abs(pos.quantity)
                 cur_p = pos.current_price if pos.current_price > 0 else pos.average_entry_price
-                buy_p = pos.average_entry_price if pos.quantity > 0 else cur_p
-                sell_p = cur_p if pos.quantity > 0 else pos.average_entry_price
+                is_short = pos.quantity < 0
 
-                # Recalculate accurate unrealized PnL
-                if pos.average_entry_price > 0 and pos.current_price > 0:
-                    pos_pnl = (pos.current_price - pos.average_entry_price) * pos.quantity if pos.quantity > 0 else (pos.average_entry_price - pos.current_price) * abs(pos.quantity)
+                # Recalculate accurate unrealized gross PnL
+                if pos.average_entry_price > 0 and cur_p > 0:
+                    pos_pnl = (cur_p - pos.average_entry_price) * pos.quantity if pos.quantity > 0 else (pos.average_entry_price - cur_p) * abs(pos.quantity)
                     pos.unrealized_pnl = round(pos_pnl, 2)
                 total_unrealized_pnl += pos.unrealized_pnl
 
-                c = cost_calculator.calculate_roundtrip_costs(
+                # 1. Entry Leg: already executed & incurred
+                entry_side = OrderSide.SELL if is_short else OrderSide.BUY
+                entry_costs = cost_calculator.calculate_single_leg_costs(
+                    side=entry_side,
                     quantity=qty,
-                    buy_price=buy_p,
-                    sell_price=sell_p,
+                    price=pos.average_entry_price,
                     product=pos.product,
                 )
-                open_charges += c["total_charges"]
-                open_brokerage += c["brokerage"]
-                open_taxes += (c["total_charges"] - c["brokerage"])
 
-        total_charges = round(open_charges + trader_service.accumulated_charges, 2)
-        total_brokerage = round(open_brokerage + trader_service.accumulated_brokerage, 2)
-        total_taxes = round(open_taxes + trader_service.accumulated_taxes, 2)
+                # 2. Exit Leg: projected when closing at LTP
+                exit_side = OrderSide.BUY if is_short else OrderSide.SELL
+                exit_costs = cost_calculator.calculate_single_leg_costs(
+                    side=exit_side,
+                    quantity=qty,
+                    price=cur_p,
+                    product=pos.product,
+                )
 
-        daily_gross_pnl = round(portfolio.daily_realized_pnl + total_unrealized_pnl, 2)
+                pos_roundtrip_charges = round(entry_costs["total_charges"] + exit_costs["total_charges"], 2)
+                pos_incurred = round(entry_costs["total_charges"], 2)
+                pos_exit_est = round(exit_costs["total_charges"], 2)
+
+                open_charges += pos_roundtrip_charges
+                open_incurred_charges += pos_incurred
+                open_projected_exit_charges += pos_exit_est
+                open_brokerage += (entry_costs["brokerage"] + exit_costs["brokerage"])
+                open_stt += (entry_costs["stt"] + exit_costs["stt"])
+                open_exchange_charges += (entry_costs["exchange_charges"] + exit_costs["exchange_charges"])
+                open_gst += (entry_costs["gst"] + exit_costs["gst"])
+                open_stamp_duty += (entry_costs["stamp_duty"] + exit_costs["stamp_duty"])
+                open_sebi += (entry_costs["sebi_charges"] + entry_costs.get("ipft_charges", 0.0) + exit_costs["sebi_charges"] + exit_costs.get("ipft_charges", 0.0))
+                open_taxes += (pos_roundtrip_charges - (entry_costs["brokerage"] + exit_costs["brokerage"]))
+
+                pos_net_pnl = round(pos.unrealized_pnl - pos_roundtrip_charges, 2)
+                pos_val = round(qty * cur_p, 2)
+
+                enhanced_positions.append({
+                    "symbol": pos.symbol,
+                    "product": pos.product.value if hasattr(pos.product, "value") else str(pos.product),
+                    "quantity": pos.quantity,
+                    "average_entry_price": round(pos.average_entry_price, 2),
+                    "current_price": round(cur_p, 2),
+                    "stop_loss": round(pos.stop_loss, 2),
+                    "target_price": round(pos.target_price, 2),
+                    "unrealized_pnl": round(pos.unrealized_pnl, 2),
+                    "net_unrealized_pnl": pos_net_pnl,
+                    "est_charges": pos_roundtrip_charges,
+                    "incurred_charges": pos_incurred,
+                    "position_value": pos_val,
+                })
+
+        realized_gross_pnl = round(portfolio.daily_realized_pnl, 2)
+        realized_charges = round(trader_service.accumulated_charges, 2)
+        realized_net_pnl = round(realized_gross_pnl - realized_charges, 2)
+
+        total_charges = round(open_charges + realized_charges, 2)
+        total_brokerage = round(open_brokerage + getattr(trader_service, "accumulated_brokerage", 0.0), 2)
+        total_taxes = round(open_taxes + getattr(trader_service, "accumulated_taxes", 0.0), 2)
+        total_stt = round(open_stt + getattr(trader_service, "accumulated_stt", 0.0), 2)
+        total_gst = round(open_gst + getattr(trader_service, "accumulated_gst", 0.0), 2)
+        total_stamp_duty = round(open_stamp_duty + getattr(trader_service, "accumulated_stamp_duty", 0.0), 2)
+        total_exchange = round(open_exchange_charges + getattr(trader_service, "accumulated_exchange_charges", 0.0), 2)
+        total_sebi = round(open_sebi + getattr(trader_service, "accumulated_sebi", 0.0), 4)
+
+        daily_gross_pnl = round(realized_gross_pnl + total_unrealized_pnl, 2)
         daily_net_pnl = round(daily_gross_pnl - total_charges, 2)
+        incurred_charges = round(realized_charges + open_incurred_charges, 2)
+        incurred_net_pnl = round(daily_gross_pnl - incurred_charges, 2)
 
         if isinstance(wallet_info, dict):
             wallet_info["unrealized_pnl"] = round(total_unrealized_pnl, 2)
@@ -251,36 +310,35 @@ def get_status():
                 "total_portfolio_value": tot_val,
                 "total_equity": tot_val,
                 "peak_equity": round(portfolio.peak_equity, 2),
-                "daily_realized_pnl": round(portfolio.daily_realized_pnl, 2),
+                "daily_realized_pnl": realized_gross_pnl,
+                "daily_realized_net_pnl": realized_net_pnl,
+                "daily_realized_charges": realized_charges,
+                "daily_unrealized_pnl": round(total_unrealized_pnl, 2),
                 "daily_gross_pnl": daily_gross_pnl,
                 "daily_total_pnl": daily_gross_pnl,
                 "total_charges": total_charges,
                 "total_brokerage": total_brokerage,
                 "total_taxes": total_taxes,
+                "total_stt": total_stt,
+                "total_gst": total_gst,
+                "total_stamp_duty": total_stamp_duty,
+                "total_exchange_charges": total_exchange,
+                "total_sebi_charges": total_sebi,
+                "open_charges": round(open_charges, 2),
+                "open_incurred_charges": round(open_incurred_charges, 2),
+                "open_projected_exit_charges": round(open_projected_exit_charges, 2),
                 "daily_net_pnl": daily_net_pnl,
+                "incurred_charges_today": incurred_charges,
+                "incurred_net_day_pnl": incurred_net_pnl,
                 "target_profit_inr": target_profit,
                 "profit_to_achieve": profit_remaining,
                 "profit_progress_pct": profit_progress_pct,
                 "profit_achieved": profit_achieved,
                 "drawdown_pct": round(portfolio.current_drawdown_pct * 100, 2),
                 "exposure_pct": round(portfolio.total_exposure_pct * 100, 2),
-                "open_positions_count": len([p for p in portfolio.positions.values() if p.quantity != 0]),
+                "open_positions_count": len(enhanced_positions),
             },
-            "positions": [
-                {
-                    "symbol": pos.symbol,
-                    "product": pos.product.value,
-                    "quantity": pos.quantity,
-                    "average_entry_price": round(pos.average_entry_price, 2),
-                    "current_price": round(pos.current_price, 2),
-                    "stop_loss": round(pos.stop_loss, 2),
-                    "target_price": round(pos.target_price, 2),
-                    "unrealized_pnl": round(pos.unrealized_pnl, 2),
-                    "position_value": round(abs(pos.quantity) * (pos.current_price or pos.average_entry_price), 2),
-                }
-                for pos in portfolio.positions.values()
-                if pos.quantity != 0
-            ],
+            "positions": enhanced_positions,
         }
         _cached_status_dict = res
         _cached_status_ts = now_ts
@@ -1278,7 +1336,11 @@ ${data.message}`);
         setElText('stat-total-charges', 'Charges: -₹' + totalCharges.toFixed(2));
         const brk = portfolio.total_brokerage || 0.0;
         const taxes = portfolio.total_taxes || 0.0;
-        setElText('stat-charges-breakdown', 'Brk: ₹' + brk.toFixed(1) + ' | Tax: ₹' + taxes.toFixed(1));
+        const chargesBreakdownEl = document.getElementById('stat-charges-breakdown');
+        if (chargesBreakdownEl) {
+          chargesBreakdownEl.innerText = 'Brk: ₹' + brk.toFixed(2) + ' | Tax: ₹' + taxes.toFixed(2);
+          chargesBreakdownEl.title = `Brokerage: ₹${brk.toFixed(2)} | STT: ₹${(portfolio.total_stt || 0).toFixed(2)} | GST: ₹${(portfolio.total_gst || 0).toFixed(2)} | Stamp Duty: ₹${(portfolio.total_stamp_duty || 0).toFixed(2)} | Exchange/SEBI: ₹${((portfolio.total_exchange_charges || 0) + (portfolio.total_sebi_charges || 0)).toFixed(2)}`;
+        }
 
         // Card 5: Dedicated Box for Profit to Achieve
         const ctrlProfit = document.getElementById('ctrl-target-profit');
@@ -1340,6 +1402,7 @@ ${data.message}`);
               totalPosVal += (p.position_value || 0);
               const pnlClass = (p.unrealized_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400';
               const sign = (p.unrealized_pnl || 0) >= 0 ? '+' : '';
+              const netSign = (p.net_unrealized_pnl || 0) >= 0 ? '+' : '';
               return `
                 <div class="p-3 bg-[#000000] rounded-lg border border-term-border hover:border-term-borderLight transition flex items-center justify-between text-xs font-mono">
                   <div>
@@ -1358,7 +1421,10 @@ ${data.message}`);
                   <div class="text-right flex items-center gap-3">
                     <div>
                       <div class="font-bold ${pnlClass} text-sm">${sign}₹${(p.unrealized_pnl || 0).toFixed(2)}</div>
-                      <div class="text-[10px] text-term-textDim">Val: ₹${(p.position_value || 0).toFixed(2)}</div>
+                      <div class="text-[10px] text-term-textDim flex items-center justify-end gap-1.5">
+                        <span>Val: ₹${(p.position_value || 0).toFixed(2)}</span>
+                        ${p.est_charges !== undefined ? `<span class="text-amber-400/90 font-mono" title="Estimated roundtrip charges: ₹${p.est_charges.toFixed(2)} (Incurred: ₹${(p.incurred_charges || 0).toFixed(2)})">(Net: ${netSign}₹${(p.net_unrealized_pnl || 0).toFixed(2)})</span>` : ''}
+                      </div>
                     </div>
                     <button onclick="closeSinglePosition('${p.symbol}')" class="px-2.5 py-1 rounded bg-red-950 hover:bg-red-900 text-red-300 border border-red-800/80 transition text-xs font-semibold">
                       Exit

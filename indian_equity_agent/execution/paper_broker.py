@@ -126,15 +126,17 @@ class PaperBroker(BaseBroker):
                 # Closing Long
                 trade_costs = self.cost_calculator.calculate_roundtrip_costs(
                     quantity=order.quantity,
-                    buy_price=existing_pos.average_entry_price,
-                    sell_price=fill_price,
+                    entry_price=existing_pos.average_entry_price,
+                    exit_price=fill_price,
+                    is_short=False,
                     product=order.product,
                 )
+                gross_pnl = trade_costs["gross_pnl"]
                 net_pnl = trade_costs["net_pnl"]
-                self.daily_realized_pnl += net_pnl
+                self.daily_realized_pnl += gross_pnl
                 self.cash += (order.quantity * fill_price) - trade_costs["total_charges"]
                 logger.info(
-                    f"Closed paper Long {order.symbol}: Fill ₹{fill_price:.2f}, Net PnL: ₹{net_pnl:.2f} (Total Charges: ₹{trade_costs['total_charges']:.2f})"
+                    f"Closed paper Long {order.symbol}: Fill ₹{fill_price:.2f}, Gross PnL: ₹{gross_pnl:.2f}, Net PnL: ₹{net_pnl:.2f} (Total Charges: ₹{trade_costs['total_charges']:.2f})"
                 )
                 del self.positions[order.symbol]
 
@@ -142,15 +144,17 @@ class PaperBroker(BaseBroker):
                 # Closing Short (Buy to cover)
                 trade_costs = self.cost_calculator.calculate_roundtrip_costs(
                     quantity=order.quantity,
-                    buy_price=fill_price,
-                    sell_price=existing_pos.average_entry_price,
+                    entry_price=existing_pos.average_entry_price,
+                    exit_price=fill_price,
+                    is_short=True,
                     product=order.product,
                 )
+                gross_pnl = trade_costs["gross_pnl"]
                 net_pnl = trade_costs["net_pnl"]
-                self.daily_realized_pnl += net_pnl
+                self.daily_realized_pnl += gross_pnl
                 self.cash -= (order.quantity * fill_price) + trade_costs["total_charges"]
                 logger.info(
-                    f"Closed paper Short {order.symbol}: Fill ₹{fill_price:.2f}, Net PnL: ₹{net_pnl:.2f} (Total Charges: ₹{trade_costs['total_charges']:.2f})"
+                    f"Closed paper Short {order.symbol}: Fill ₹{fill_price:.2f}, Gross PnL: ₹{gross_pnl:.2f}, Net PnL: ₹{net_pnl:.2f} (Total Charges: ₹{trade_costs['total_charges']:.2f})"
                 )
                 del self.positions[order.symbol]
 

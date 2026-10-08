@@ -74,17 +74,20 @@ class BrokerConfig(BaseModel):
 
 
 class StatutoryCostConfig(BaseModel):
-    """Indian statutory charges & taxes for equity trading (NSE)."""
-    brokerage_per_order_max: float = 20.0  # Discount broker e.g., Zerodha ₹20 flat
-    brokerage_pct: float = 0.0003  # 0.03% or ₹20 whichever lower
-    stt_delivery_buy_pct: float = 0.001  # 0.1% on buy
-    stt_delivery_sell_pct: float = 0.001  # 0.1% on sell
-    stt_intraday_sell_pct: float = 0.00025  # 0.025% on sell only
-    nse_turnover_fee_pct: float = 0.0000297  # 0.00297%
-    sebi_turnover_fee_pct: float = 0.000001  # ₹10 per crore
-    stamp_duty_delivery_pct: float = 0.00015  # 0.015% on buy
-    stamp_duty_intraday_pct: float = 0.00003  # 0.003% on buy
-    gst_pct: float = 0.18  # 18% on (brokerage + turnover fee + sebi fee)
+    """Indian statutory charges & taxes for equity trading (NSE/Groww)."""
+    brokerage_per_order_max: float = 20.0  # Groww ₹20 flat cap per executed order
+    brokerage_intraday_pct: float = 0.0005  # 0.05% or ₹20 whichever lower (Groww Intraday MIS)
+    brokerage_delivery_pct: float = 0.0010  # 0.10% or ₹20 whichever lower (Groww Delivery CNC)
+    brokerage_pct: float = 0.0005  # Default brokerage rate (0.05%)
+    stt_delivery_buy_pct: float = 0.001  # 0.1% on buy (CNC)
+    stt_delivery_sell_pct: float = 0.001  # 0.1% on sell (CNC)
+    stt_intraday_sell_pct: float = 0.00025  # 0.025% on sell only (MIS)
+    nse_turnover_fee_pct: float = 0.0000297  # 0.00297% on both legs
+    sebi_turnover_fee_pct: float = 0.000001  # ₹10 per crore (0.0001%) on both legs
+    ipft_turnover_fee_pct: float = 0.000001  # NSE IPFT ₹10 per crore (0.0001%) on both legs
+    stamp_duty_delivery_pct: float = 0.00015  # 0.015% on buy only (CNC)
+    stamp_duty_intraday_pct: float = 0.00003  # 0.003% on buy only (MIS)
+    gst_pct: float = 0.18  # 18% on (Brokerage + Exchange turnover fee + SEBI fee + IPFT)
 
 
 class SystemConfig(BaseModel):

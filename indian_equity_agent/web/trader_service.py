@@ -129,10 +129,15 @@ class AutonomousTraderService:
         self._in_flight_symbols: set[str] = set()
         self._symbol_cooldown: Dict[str, float] = {}
 
-        # Statutory Taxes & Brokerage Accumulator (STT, GST, SEBI, Stamp Duty, NSE Fees, Brokerage)
+        # Statutory Taxes & Brokerage Accumulator (STT, GST, SEBI, IPFT, Stamp Duty, NSE Fees, Brokerage)
         self.accumulated_charges = 0.0
         self.accumulated_brokerage = 0.0
         self.accumulated_taxes = 0.0
+        self.accumulated_stt = 0.0
+        self.accumulated_exchange_charges = 0.0
+        self.accumulated_gst = 0.0
+        self.accumulated_stamp_duty = 0.0
+        self.accumulated_sebi = 0.0
 
         # Capital & Risk Controls
         self.max_loss_inr = 5000.0  # Max daily loss threshold (₹)
@@ -211,6 +216,11 @@ class AutonomousTraderService:
                         self.accumulated_charges = float(data.get("accumulated_charges", 0.0))
                         self.accumulated_brokerage = float(data.get("accumulated_brokerage", 0.0))
                         self.accumulated_taxes = float(data.get("accumulated_taxes", 0.0))
+                        self.accumulated_stt = float(data.get("accumulated_stt", 0.0))
+                        self.accumulated_exchange_charges = float(data.get("accumulated_exchange_charges", 0.0))
+                        self.accumulated_gst = float(data.get("accumulated_gst", 0.0))
+                        self.accumulated_stamp_duty = float(data.get("accumulated_stamp_duty", 0.0))
+                        self.accumulated_sebi = float(data.get("accumulated_sebi", 0.0))
                         self.cycles_completed = int(data.get("cycles_completed", 0))
                 except Exception:
                     pass
@@ -234,6 +244,11 @@ class AutonomousTraderService:
                 "accumulated_charges": round(self.accumulated_charges, 2),
                 "accumulated_brokerage": round(self.accumulated_brokerage, 2),
                 "accumulated_taxes": round(self.accumulated_taxes, 2),
+                "accumulated_stt": round(self.accumulated_stt, 2),
+                "accumulated_exchange_charges": round(self.accumulated_exchange_charges, 2),
+                "accumulated_gst": round(self.accumulated_gst, 2),
+                "accumulated_stamp_duty": round(self.accumulated_stamp_duty, 2),
+                "accumulated_sebi": round(self.accumulated_sebi, 4),
                 "cycles_completed": self.cycles_completed,
                 "started_at": self.started_at.isoformat() if self.started_at else None,
                 "last_updated": IndianMarketCalendar.now_ist().isoformat(),
@@ -615,17 +630,22 @@ class AutonomousTraderService:
                         if filled.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
                             exit_p = current_price if current_price > 0 else pos.average_entry_price
                             qty = abs(pos.quantity)
-                            buy_p = pos.average_entry_price if pos.quantity > 0 else exit_p
-                            sell_p = exit_p if pos.quantity > 0 else pos.average_entry_price
+                            is_short = pos.quantity < 0
                             costs = self.cost_calculator.calculate_roundtrip_costs(
                                 quantity=qty,
-                                buy_price=buy_p,
-                                sell_price=sell_p,
+                                entry_price=pos.average_entry_price,
+                                exit_price=exit_p,
+                                is_short=is_short,
                                 product=pos.product,
                             )
                             self.accumulated_charges += costs["total_charges"]
                             self.accumulated_brokerage += costs["brokerage"]
                             self.accumulated_taxes += (costs["total_charges"] - costs["brokerage"])
+                            self.accumulated_stt += costs["stt"]
+                            self.accumulated_exchange_charges += costs["exchange_charges"]
+                            self.accumulated_gst += costs["gst"]
+                            self.accumulated_stamp_duty += costs["stamp_duty"]
+                            self.accumulated_sebi += (costs["sebi_charges"] + costs.get("ipft_charges", 0.0))
                             self._save_persistent_state()
 
                             # Evolve strategy metrics on trade completion
@@ -878,17 +898,22 @@ class AutonomousTraderService:
             if filled.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
                 exit_p = pos.current_price if pos.current_price > 0 else pos.average_entry_price
                 qty = abs(pos.quantity)
-                buy_p = pos.average_entry_price if pos.quantity > 0 else exit_p
-                sell_p = exit_p if pos.quantity > 0 else pos.average_entry_price
+                is_short = pos.quantity < 0
                 costs = self.cost_calculator.calculate_roundtrip_costs(
                     quantity=qty,
-                    buy_price=buy_p,
-                    sell_price=sell_p,
+                    entry_price=pos.average_entry_price,
+                    exit_price=exit_p,
+                    is_short=is_short,
                     product=pos.product,
                 )
                 self.accumulated_charges += costs["total_charges"]
                 self.accumulated_brokerage += costs["brokerage"]
                 self.accumulated_taxes += (costs["total_charges"] - costs["brokerage"])
+                self.accumulated_stt += costs["stt"]
+                self.accumulated_exchange_charges += costs["exchange_charges"]
+                self.accumulated_gst += costs["gst"]
+                self.accumulated_stamp_duty += costs["stamp_duty"]
+                self.accumulated_sebi += (costs["sebi_charges"] + costs.get("ipft_charges", 0.0))
                 self._save_persistent_state()
 
                 # Evolve strategy metrics on manual exit
@@ -954,6 +979,11 @@ class AutonomousTraderService:
             "accumulated_charges": round(self.accumulated_charges, 2),
             "accumulated_brokerage": round(self.accumulated_brokerage, 2),
             "accumulated_taxes": round(self.accumulated_taxes, 2),
+            "accumulated_stt": round(self.accumulated_stt, 2),
+            "accumulated_exchange_charges": round(self.accumulated_exchange_charges, 2),
+            "accumulated_gst": round(self.accumulated_gst, 2),
+            "accumulated_stamp_duty": round(self.accumulated_stamp_duty, 2),
+            "accumulated_sebi": round(self.accumulated_sebi, 4),
             "last_scan_at": self.last_scan_at.strftime("%H:%M:%S IST") if self.last_scan_at else "Never",
             "evolution": self.evolution_engine.get_evolution_summary(),
         }
