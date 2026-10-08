@@ -143,123 +143,165 @@ class SettingsUpdateRequest(BaseModel):
 @app.get("/api/status")
 def get_status():
     """Returns real-time system, market, and runner status with exact statutory charges."""
-    now_ist = IndianMarketCalendar.now_ist()
-    portfolio = shared_broker.get_portfolio_state()
-    wallet_info = shared_broker.get_wallet_margins()
-    trader_status = trader_service.get_status()
+    try:
+        now_ist = IndianMarketCalendar.now_ist()
+        portfolio = shared_broker.get_portfolio_state()
+        wallet_info = shared_broker.get_wallet_margins()
+        trader_status = trader_service.get_status()
 
-    # Calculate open positions estimated roundtrip statutory charges (STT, GST, SEBI, Stamp Duty, NSE fees, Brokerage)
-    open_charges = 0.0
-    open_brokerage = 0.0
-    open_taxes = 0.0
-    total_unrealized_pnl = 0.0
+        # Calculate open positions estimated roundtrip statutory charges (STT, GST, SEBI, Stamp Duty, NSE fees, Brokerage)
+        open_charges = 0.0
+        open_brokerage = 0.0
+        open_taxes = 0.0
+        total_unrealized_pnl = 0.0
 
-    for pos in portfolio.positions.values():
-        if pos.quantity != 0:
-            if pos.current_price <= 0:
-                try:
-                    q = data_source.get_quote(pos.symbol)
-                    if q and q.last_price > 0:
-                        pos.current_price = q.last_price
-                except Exception:
-                    pass
-            if pos.average_entry_price <= 0:
-                if pos.symbol == "BEL":
-                    pos.average_entry_price = 375.45
-                elif pos.current_price > 0:
-                    pos.average_entry_price = pos.current_price
+        for pos in portfolio.positions.values():
+            if pos.quantity != 0:
+                if pos.current_price <= 0:
+                    try:
+                        q = data_source.get_quote(pos.symbol)
+                        if q and q.last_price > 0:
+                            pos.current_price = q.last_price
+                    except Exception:
+                        pass
+                if pos.average_entry_price <= 0:
+                    if pos.symbol == "BEL":
+                        pos.average_entry_price = 375.45
+                    elif pos.current_price > 0:
+                        pos.average_entry_price = pos.current_price
 
-            if pos.stop_loss <= 0 and pos.average_entry_price > 0:
-                pos.stop_loss = round(pos.average_entry_price * 1.015, 2) if pos.quantity < 0 else round(pos.average_entry_price * 0.985, 2)
-            if pos.target_price <= 0 and pos.average_entry_price > 0:
-                pos.target_price = round(pos.average_entry_price * 0.97, 2) if pos.quantity < 0 else round(pos.average_entry_price * 1.03, 2)
+                if pos.stop_loss <= 0 and pos.average_entry_price > 0:
+                    pos.stop_loss = round(pos.average_entry_price * 1.015, 2) if pos.quantity < 0 else round(pos.average_entry_price * 0.985, 2)
+                if pos.target_price <= 0 and pos.average_entry_price > 0:
+                    pos.target_price = round(pos.average_entry_price * 0.97, 2) if pos.quantity < 0 else round(pos.average_entry_price * 1.03, 2)
 
-            qty = abs(pos.quantity)
-            cur_p = pos.current_price if pos.current_price > 0 else pos.average_entry_price
-            buy_p = pos.average_entry_price if pos.quantity > 0 else cur_p
-            sell_p = cur_p if pos.quantity > 0 else pos.average_entry_price
+                qty = abs(pos.quantity)
+                cur_p = pos.current_price if pos.current_price > 0 else pos.average_entry_price
+                buy_p = pos.average_entry_price if pos.quantity > 0 else cur_p
+                sell_p = cur_p if pos.quantity > 0 else pos.average_entry_price
 
-            # Recalculate accurate unrealized PnL
-            if pos.average_entry_price > 0 and pos.current_price > 0:
-                pos_pnl = (pos.current_price - pos.average_entry_price) * pos.quantity if pos.quantity > 0 else (pos.average_entry_price - pos.current_price) * abs(pos.quantity)
-                pos.unrealized_pnl = round(pos_pnl, 2)
-            total_unrealized_pnl += pos.unrealized_pnl
+                # Recalculate accurate unrealized PnL
+                if pos.average_entry_price > 0 and pos.current_price > 0:
+                    pos_pnl = (pos.current_price - pos.average_entry_price) * pos.quantity if pos.quantity > 0 else (pos.average_entry_price - pos.current_price) * abs(pos.quantity)
+                    pos.unrealized_pnl = round(pos_pnl, 2)
+                total_unrealized_pnl += pos.unrealized_pnl
 
-            c = cost_calculator.calculate_roundtrip_costs(
-                quantity=qty,
-                buy_price=buy_p,
-                sell_price=sell_p,
-                product=pos.product,
-            )
-            open_charges += c["total_charges"]
-            open_brokerage += c["brokerage"]
-            open_taxes += (c["total_charges"] - c["brokerage"])
+                c = cost_calculator.calculate_roundtrip_costs(
+                    quantity=qty,
+                    buy_price=buy_p,
+                    sell_price=sell_p,
+                    product=pos.product,
+                )
+                open_charges += c["total_charges"]
+                open_brokerage += c["brokerage"]
+                open_taxes += (c["total_charges"] - c["brokerage"])
 
-    total_charges = round(open_charges + trader_service.accumulated_charges, 2)
-    total_brokerage = round(open_brokerage + trader_service.accumulated_brokerage, 2)
-    total_taxes = round(open_taxes + trader_service.accumulated_taxes, 2)
+        total_charges = round(open_charges + trader_service.accumulated_charges, 2)
+        total_brokerage = round(open_brokerage + trader_service.accumulated_brokerage, 2)
+        total_taxes = round(open_taxes + trader_service.accumulated_taxes, 2)
 
-    daily_gross_pnl = round(portfolio.daily_realized_pnl + total_unrealized_pnl, 2)
-    daily_net_pnl = round(daily_gross_pnl - total_charges, 2)
+        daily_gross_pnl = round(portfolio.daily_realized_pnl + total_unrealized_pnl, 2)
+        daily_net_pnl = round(daily_gross_pnl - total_charges, 2)
 
-    if isinstance(wallet_info, dict):
-        wallet_info["unrealized_pnl"] = round(total_unrealized_pnl, 2)
-        wallet_info["daily_total_pnl"] = daily_gross_pnl
+        if isinstance(wallet_info, dict):
+            wallet_info["unrealized_pnl"] = round(total_unrealized_pnl, 2)
+            wallet_info["daily_total_pnl"] = daily_gross_pnl
 
-    target_profit = float(trader_service.target_profit_inr or 10000.0)
-    profit_remaining = max(0.0, round(target_profit - daily_net_pnl, 2)) if target_profit > 0 else 0.0
-    profit_progress_pct = round(min(100.0, max(0.0, (daily_net_pnl / target_profit) * 100.0)), 1) if target_profit > 0 else 0.0
-    profit_achieved = (daily_net_pnl >= target_profit) if target_profit > 0 else False
+        target_profit = float(trader_service.target_profit_inr or 10000.0)
+        profit_remaining = max(0.0, round(target_profit - daily_net_pnl, 2)) if target_profit > 0 else 0.0
+        profit_progress_pct = round(min(100.0, max(0.0, (daily_net_pnl / target_profit) * 100.0)), 1) if target_profit > 0 else 0.0
+        profit_achieved = (daily_net_pnl >= target_profit) if target_profit > 0 else False
 
-    tot_val = max(0.0, round(portfolio.cash + total_unrealized_pnl + (wallet_info.get("used_margin", 0.0) if isinstance(wallet_info, dict) else 0.0), 2))
+        tot_val = max(0.0, round(portfolio.cash + total_unrealized_pnl + (wallet_info.get("used_margin", 0.0) if isinstance(wallet_info, dict) else 0.0), 2))
 
-    return {
-        "timestamp_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
-        "is_market_open": IndianMarketCalendar.is_market_open(now_ist),
-        "is_entry_allowed": IndianMarketCalendar.is_entry_allowed(now_ist),
-        "is_squareoff_time": IndianMarketCalendar.is_squareoff_time(now_ist),
-        "kill_switch_active": shared_kill_switch.is_active,
-        "kill_switch_reason": shared_kill_switch.reason,
-        "broker_type": "GROWW",
-        "ai_enabled": settings.ai.enable_ai_analysis and bool(settings.ai.api_key),
-        "trader": trader_status,
-        "wallet": wallet_info,
-        "portfolio": {
-            "cash": round(portfolio.cash, 2),
-            "total_portfolio_value": tot_val,
-            "total_equity": tot_val,
-            "peak_equity": round(portfolio.peak_equity, 2),
-            "daily_realized_pnl": round(portfolio.daily_realized_pnl, 2),
-            "daily_gross_pnl": daily_gross_pnl,
-            "daily_total_pnl": daily_gross_pnl,
-            "total_charges": total_charges,
-            "total_brokerage": total_brokerage,
-            "total_taxes": total_taxes,
-            "daily_net_pnl": daily_net_pnl,
-            "target_profit_inr": target_profit,
-            "profit_to_achieve": profit_remaining,
-            "profit_progress_pct": profit_progress_pct,
-            "profit_achieved": profit_achieved,
-            "drawdown_pct": round(portfolio.current_drawdown_pct * 100, 2),
-            "exposure_pct": round(portfolio.total_exposure_pct * 100, 2),
-            "open_positions_count": len([p for p in portfolio.positions.values() if p.quantity != 0]),
-        },
-        "positions": [
-            {
-                "symbol": pos.symbol,
-                "product": pos.product.value,
-                "quantity": pos.quantity,
-                "average_entry_price": round(pos.average_entry_price, 2),
-                "current_price": round(pos.current_price, 2),
-                "stop_loss": round(pos.stop_loss, 2),
-                "target_price": round(pos.target_price, 2),
-                "unrealized_pnl": round(pos.unrealized_pnl, 2),
-                "position_value": round(abs(pos.quantity) * (pos.current_price or pos.average_entry_price), 2),
-            }
-            for pos in portfolio.positions.values()
-            if pos.quantity != 0
-        ],
-    }
+        return {
+            "timestamp_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
+            "is_market_open": IndianMarketCalendar.is_market_open(now_ist),
+            "is_entry_allowed": IndianMarketCalendar.is_entry_allowed(now_ist),
+            "is_squareoff_time": IndianMarketCalendar.is_squareoff_time(now_ist),
+            "kill_switch_active": shared_kill_switch.is_active,
+            "kill_switch_reason": shared_kill_switch.reason,
+            "broker_type": "GROWW",
+            "ai_enabled": settings.ai.enable_ai_analysis and bool(settings.ai.api_key),
+            "trader": trader_status,
+            "wallet": wallet_info,
+            "portfolio": {
+                "cash": round(portfolio.cash, 2),
+                "total_portfolio_value": tot_val,
+                "total_equity": tot_val,
+                "peak_equity": round(portfolio.peak_equity, 2),
+                "daily_realized_pnl": round(portfolio.daily_realized_pnl, 2),
+                "daily_gross_pnl": daily_gross_pnl,
+                "daily_total_pnl": daily_gross_pnl,
+                "total_charges": total_charges,
+                "total_brokerage": total_brokerage,
+                "total_taxes": total_taxes,
+                "daily_net_pnl": daily_net_pnl,
+                "target_profit_inr": target_profit,
+                "profit_to_achieve": profit_remaining,
+                "profit_progress_pct": profit_progress_pct,
+                "profit_achieved": profit_achieved,
+                "drawdown_pct": round(portfolio.current_drawdown_pct * 100, 2),
+                "exposure_pct": round(portfolio.total_exposure_pct * 100, 2),
+                "open_positions_count": len([p for p in portfolio.positions.values() if p.quantity != 0]),
+            },
+            "positions": [
+                {
+                    "symbol": pos.symbol,
+                    "product": pos.product.value,
+                    "quantity": pos.quantity,
+                    "average_entry_price": round(pos.average_entry_price, 2),
+                    "current_price": round(pos.current_price, 2),
+                    "stop_loss": round(pos.stop_loss, 2),
+                    "target_price": round(pos.target_price, 2),
+                    "unrealized_pnl": round(pos.unrealized_pnl, 2),
+                    "position_value": round(abs(pos.quantity) * (pos.current_price or pos.average_entry_price), 2),
+                }
+                for pos in portfolio.positions.values()
+                if pos.quantity != 0
+            ],
+        }
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(f"Error in /api/status: {tb}")
+        now_ist = IndianMarketCalendar.now_ist()
+        wallet_info = shared_broker.get_wallet_margins()
+        return {
+            "timestamp_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
+            "is_market_open": IndianMarketCalendar.is_market_open(now_ist),
+            "is_entry_allowed": IndianMarketCalendar.is_entry_allowed(now_ist),
+            "is_squareoff_time": IndianMarketCalendar.is_squareoff_time(now_ist),
+            "kill_switch_active": shared_kill_switch.is_active,
+            "kill_switch_reason": shared_kill_switch.reason,
+            "broker_type": "GROWW",
+            "ai_enabled": settings.ai.enable_ai_analysis and bool(settings.ai.api_key),
+            "trader": trader_service.get_status(),
+            "wallet": wallet_info,
+            "portfolio": {
+                "cash": float(wallet_info.get("available_cash", 0.0) if isinstance(wallet_info, dict) else 0.0),
+                "total_portfolio_value": float(wallet_info.get("total_equity", 0.0) if isinstance(wallet_info, dict) else 0.0),
+                "total_equity": float(wallet_info.get("total_equity", 0.0) if isinstance(wallet_info, dict) else 0.0),
+                "peak_equity": float(wallet_info.get("total_equity", 0.0) if isinstance(wallet_info, dict) else 0.0),
+                "daily_realized_pnl": float(wallet_info.get("daily_realized_pnl", 0.0) if isinstance(wallet_info, dict) else 0.0),
+                "daily_gross_pnl": float(wallet_info.get("daily_total_pnl", 0.0) if isinstance(wallet_info, dict) else 0.0),
+                "daily_total_pnl": float(wallet_info.get("daily_total_pnl", 0.0) if isinstance(wallet_info, dict) else 0.0),
+                "total_charges": 0.0,
+                "total_brokerage": 0.0,
+                "total_taxes": 0.0,
+                "daily_net_pnl": float(wallet_info.get("daily_total_pnl", 0.0) if isinstance(wallet_info, dict) else 0.0),
+                "target_profit_inr": float(trader_service.target_profit_inr or 10000.0),
+                "profit_to_achieve": 10000.0,
+                "profit_progress_pct": 0.0,
+                "profit_achieved": False,
+                "drawdown_pct": 0.0,
+                "exposure_pct": 0.0,
+                "open_positions_count": int(wallet_info.get("positions_count", 0) if isinstance(wallet_info, dict) else 0),
+            },
+            "positions": [],
+            "error": str(e),
+            "traceback": tb,
+        }
 
 
 @app.get("/api/wallet")

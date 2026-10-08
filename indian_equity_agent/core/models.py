@@ -127,18 +127,25 @@ class Position(BaseModel):
     stop_loss: float = 0.0
     target_price: float = 0.0
     realized_pnl: float = 0.0
+    unrealized_pnl_val: Optional[float] = None
     opened_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     trailing_stop: Optional[float] = None
 
     @property
     def unrealized_pnl(self) -> float:
         """Mark to Market Unrealized PnL."""
+        if self.unrealized_pnl_val is not None:
+            return round(self.unrealized_pnl_val, 2)
         if self.quantity == 0 or self.average_entry_price == 0:
             return 0.0
         if self.quantity > 0:
-            return (self.current_price - self.average_entry_price) * self.quantity
+            return round((self.current_price - self.average_entry_price) * self.quantity, 2)
         else:
-            return (self.average_entry_price - self.current_price) * abs(self.quantity)
+            return round((self.average_entry_price - self.current_price) * abs(self.quantity), 2)
+
+    @unrealized_pnl.setter
+    def unrealized_pnl(self, val: float):
+        self.unrealized_pnl_val = float(val)
 
     @property
     def position_value(self) -> float:

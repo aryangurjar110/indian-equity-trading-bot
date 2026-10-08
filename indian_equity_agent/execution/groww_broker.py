@@ -512,7 +512,7 @@ class GrowwBroker(BaseBroker):
                     sl = round(avg_p * 1.015, 2) if qty < 0 else (round(avg_p * 0.985, 2) if avg_p > 0 else 0.0)
                     tgt = round(avg_p * 0.97, 2) if qty < 0 else (round(avg_p * 1.03, 2) if avg_p > 0 else 0.0)
 
-                    positions[sym] = Position(
+                    pos = Position(
                         symbol=sym,
                         product=ProductType.MIS if item.get("product") == "MIS" else ProductType.CNC,
                         quantity=qty,
@@ -520,9 +520,10 @@ class GrowwBroker(BaseBroker):
                         current_price=cur_p,
                         stop_loss=sl,
                         target_price=tgt,
-                        unrealized_pnl=round(unrealized, 2),
                         realized_pnl=_to_float(item.get("realised_pnl") or 0.0),
                     )
+                    pos.unrealized_pnl = round(unrealized, 2)
+                    positions[sym] = pos
                 return positions
             except Exception as e:
                 logger.warning(f"Error fetching Groww positions via SDK: {e}")
@@ -577,7 +578,7 @@ class GrowwBroker(BaseBroker):
                 sl = round(avg_p * 1.015, 2) if qty < 0 else (round(avg_p * 0.985, 2) if avg_p > 0 else 0.0)
                 tgt = round(avg_p * 0.97, 2) if qty < 0 else (round(avg_p * 1.03, 2) if avg_p > 0 else 0.0)
 
-                positions[sym] = Position(
+                pos = Position(
                     symbol=sym,
                     product=ProductType.MIS if item.get("product") == "MIS" else ProductType.CNC,
                     quantity=qty,
@@ -585,9 +586,10 @@ class GrowwBroker(BaseBroker):
                     current_price=cur_p,
                     stop_loss=sl,
                     target_price=tgt,
-                    unrealized_pnl=round(unrealized, 2),
                     realized_pnl=_to_float(item.get("realised_pnl") or item.get("pnl") or 0.0),
                 )
+                pos.unrealized_pnl = round(unrealized, 2)
+                positions[sym] = pos
         except Exception as e:
             if "authentication" in str(e).lower() or "401" in str(e) or "403" in str(e):
                 raise
