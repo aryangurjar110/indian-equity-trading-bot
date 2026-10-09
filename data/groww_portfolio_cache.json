@@ -1,29 +1,6 @@
 {
-  "cash": 311.11,
-  "used_margin": 283.07,
-  "positions": {
-    "BAJFINANCE": {
-      "symbol": "BAJFINANCE",
-      "product": "MIS",
-      "quantity": -1,
-      "average_entry_price": 948.9,
-      "current_price": 958.0,
-      "stop_loss": 963.13,
-      "target_price": 920.43,
-      "realized_pnl": 0.0,
-      "unrealized_pnl": -9.1
-    },
-    "BEL": {
-      "symbol": "BEL",
-      "product": "MIS",
-      "quantity": -1,
-      "average_entry_price": 376.0,
-      "current_price": 372.05,
-      "stop_loss": 381.64,
-      "target_price": 364.72,
-      "realized_pnl": 0.0,
-      "unrealized_pnl": 3.95
-    }
-  },
-  "updated_at": "2026-10-08T14:45:00+05:30"
+  "cash": 0.0,
+  "used_margin": 0.0,
+  "positions": {},
+  "updated_at": "2026-10-09T10:50:00+05:30"
 }

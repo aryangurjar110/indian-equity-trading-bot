@@ -194,11 +194,8 @@ def get_status():
                             pos.current_price = q.last_price
                     except Exception:
                         pass
-                if pos.average_entry_price <= 0:
-                    if pos.symbol == "BEL":
-                        pos.average_entry_price = 375.45
-                    elif pos.current_price > 0:
-                        pos.average_entry_price = pos.current_price
+                if pos.average_entry_price <= 0 and pos.current_price > 0:
+                    pos.average_entry_price = pos.current_price
 
                 if pos.stop_loss <= 0 and pos.average_entry_price > 0:
                     pos.stop_loss = round(pos.average_entry_price * 1.015, 2) if pos.quantity < 0 else round(pos.average_entry_price * 0.985, 2)
@@ -370,10 +367,10 @@ def get_status():
             "trader": trader_service.get_status(),
             "wallet": w,
             "portfolio": {
-                "cash": _safe_f(w.get("available_cash"), 311.11),
-                "total_portfolio_value": _safe_f(w.get("total_equity"), 586.73),
-                "total_equity": _safe_f(w.get("total_equity"), 586.73),
-                "peak_equity": _safe_f(w.get("total_equity"), 586.73),
+                "cash": _safe_f(w.get("available_cash"), 0.0),
+                "total_portfolio_value": _safe_f(w.get("total_equity"), 0.0),
+                "total_equity": _safe_f(w.get("total_equity"), 0.0),
+                "peak_equity": _safe_f(w.get("total_equity"), 0.0),
                 "daily_realized_pnl": _safe_f(w.get("daily_realized_pnl"), 0.0),
                 "daily_gross_pnl": _safe_f(w.get("daily_total_pnl"), 0.0),
                 "daily_total_pnl": _safe_f(w.get("daily_total_pnl"), 0.0),

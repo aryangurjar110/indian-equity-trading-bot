@@ -118,8 +118,8 @@ class GrowwBroker(BaseBroker):
             try:
                 with open(self.cache_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                cash = float(data.get("cash", 311.11))
-                used_margin = float(data.get("used_margin", 283.07))
+                cash = float(data.get("cash", 0.0))
+                used_margin = float(data.get("used_margin", 0.0))
                 pos_dict = {}
                 for sym, p_data in data.get("positions", {}).items():
                     qty = int(p_data.get("quantity", 0))
@@ -152,33 +152,19 @@ class GrowwBroker(BaseBroker):
             except Exception as e:
                 logger.warning(f"Error loading persistent portfolio cache: {e}")
 
-        # Seed initial state with live active Groww positions
-        default_pos = {
-            "BAJFINANCE": Position(
-                symbol="BAJFINANCE", product=ProductType.MIS, quantity=-1,
-                average_entry_price=948.90, current_price=958.00,
-                stop_loss=963.13, target_price=920.43, realized_pnl=0.0,
-            ),
-            "BEL": Position(
-                symbol="BEL", product=ProductType.MIS, quantity=-1,
-                average_entry_price=376.00, current_price=372.05,
-                stop_loss=381.64, target_price=364.72, realized_pnl=0.0,
-            ),
-        }
-        default_pos["BAJFINANCE"].unrealized_pnl = -9.10
-        default_pos["BEL"].unrealized_pnl = 3.95
-        self._cached_positions = default_pos
+        # Clean initial state with zero fake positions
+        self._cached_positions = {}
         self._cached_positions_ts = 0.0
         self._cached_portfolio_state = PortfolioState(
-            cash=311.11,
-            total_equity=588.93,
-            peak_equity=588.93,
-            daily_starting_equity=588.93,
+            cash=0.0,
+            total_equity=0.0,
+            peak_equity=0.0,
+            daily_starting_equity=0.0,
             daily_realized_pnl=0.0,
-            positions=default_pos,
+            positions={},
         )
         self._cached_portfolio_ts = 0.0
-        self._save_portfolio_cache(311.11, 283.07, default_pos)
+        self._save_portfolio_cache(0.0, 0.0, {})
 
     def _save_portfolio_cache(self, cash: float, used_margin: float, positions: Dict[str, Position]):
         """Persists current portfolio and positions to disk."""
@@ -227,16 +213,31 @@ class GrowwBroker(BaseBroker):
             logger.warning("growwapi library not available. Using fallback REST adapter.")
             return None
 
-        # 1. Try with existing access_token if available and looks like a valid JWT
-        if self.access_token and len(self.access_token.strip()) > 50:
+        # 1. Try with existing access_token if available
+        if self.access_token and len(self.access_token.strip()) > 30:
             try:
                 clean_tok = self.access_token.strip().replace('"', '')
                 client = GrowwAPI(clean_tok)
-                self._client = client
-                self._last_auth_error = ""
-                return self._client
+                try:
+                    profile = client.get_user_profile()
+                    self._ucc = profile.get("ucc", "") if isinstance(profile, dict) else ""
+                    self._is_authenticated = True
+                    self._last_auth_error = ""
+                    self._client = client
+                    self.kill_switch.record_api_success()
+                    logger.info(f"Groww access token verified successfully (UCC: {self._ucc})")
+                    return self._client
+                except Exception as verify_err:
+                    err_s = str(verify_err)
+                    logger.warning(f"Groww token validation check failed: {err_s}")
+                    self._last_auth_error = err_s
+                    self._is_authenticated = False
+                    self._client = None
+                    return None
             except Exception as e:
                 logger.info(f"Existing Groww access token init notice: {e}")
+                self._last_auth_error = str(e)
+                self._is_authenticated = False
                 self._client = None
 
         # 2. Automatically generate fresh access token using api_key and secret
@@ -298,6 +299,13 @@ class GrowwBroker(BaseBroker):
         return None
 
     @property
+    def is_authenticated(self) -> bool:
+        """Returns True if Groww broker client is authenticated and verified."""
+        if self._client:
+            return True
+        return getattr(self, "_is_authenticated", False)
+
+    @property
     def _headers(self) -> Dict[str, str]:
         return {
             "Authorization": f"Bearer {self.access_token or self.api_key}",
@@ -311,8 +319,10 @@ class GrowwBroker(BaseBroker):
         try:
             resp = requests.request(method, url, headers=self._headers, json=data, timeout=timeout)
             if resp.status_code in (401, 403):
+                self._is_authenticated = False
+                self._last_auth_error = "Groww authentication failure: Invalid or expired access token."
                 self.kill_switch.trigger("Groww authentication failure: Invalid or expired access token.")
-                raise BrokerConnectionError("Groww authentication failure.")
+                raise BrokerConnectionError("Groww authentication failure: Invalid or expired access token.")
             if resp.status_code == 404 and endpoint in ("positions", "positions/user", "orders"):
                 return {}
 
@@ -394,60 +404,42 @@ class GrowwBroker(BaseBroker):
             except Exception as e:
                 err_str = str(e).lower()
                 logger.warning(f"Error reading Groww margins via SDK: {e}")
-                if "unauthor" in err_str or "401" in err_str:
+                self._last_auth_error = str(e)
+                if "unauthor" in err_str or "401" in err_str or "auth" in err_str or "token" in err_str:
                     self._client = None
+                    self._is_authenticated = False
 
-        # Fallback with live LTP quote enrichment from persistent cache
-        if self._cached_portfolio_state is not None:
-            now_ts = time.time()
-            pos_dict = self._cached_portfolio_state.positions or {}
-            for sym, p in pos_dict.items():
-                if p.quantity != 0:
-                    try:
-                        from ..market_data.yfinance_source import YFinanceSource
-                        q = YFinanceSource().get_quote(sym)
-                        if q and q.last_price > 0:
-                            p.current_price = q.last_price
-                    except Exception:
-                        pass
-                    if p.current_price > 0 and p.average_entry_price > 0:
-                        p_pnl = (p.current_price - p.average_entry_price) * p.quantity if p.quantity > 0 else (p.average_entry_price - p.current_price) * abs(p.quantity)
-                        p.unrealized_pnl = round(p_pnl, 2)
+        # Fallback if unauthenticated: NEVER fake balance or positions
+        auth_msg = getattr(self, "_last_auth_error", "") or "Groww authentication required. Please provide a valid Access Token in Settings."
+        is_token_err = "auth" in auth_msg.lower() or "token" in auth_msg.lower() or "expired" in auth_msg.lower()
+        status_label = "TOKEN_EXPIRED" if is_token_err else "DISCONNECTED"
+        display_msg = "Your daily Groww Access Token is expired or invalid. Open Groww Web -> Settings -> Trading APIs, generate today's Access Token, and paste it into Settings -> API Settings." if is_token_err else auth_msg
 
-            unrealized = sum(p.unrealized_pnl for p in pos_dict.values())
-            realized = sum(p.realized_pnl for p in pos_dict.values())
-            cash_val = self._cached_portfolio_state.cash if self._cached_portfolio_state.cash > 0 else 311.11
-            tot_eq = max(0.0, round(cash_val + 283.07 + unrealized, 2))
-            self._cached_portfolio_state.total_equity = tot_eq
-            self._cached_portfolio_state.daily_realized_pnl = realized
-
-            self._cached_wallet_margins = {
-                "status": "CONNECTED",
-                "available_cash": cash_val,
-                "used_margin": 283.07,
-                "collateral": 0.0,
-                "total_equity": tot_eq,
-                "daily_realized_pnl": realized,
-                "unrealized_pnl": round(unrealized, 2),
-                "daily_total_pnl": round(realized + unrealized, 2),
-                "positions_count": len([p for p in pos_dict.values() if p.quantity != 0]),
-                "ucc": self._ucc or "Active",
-                "message": "Connected to Live Groww Account (Live Market LTP Quotes Active)",
-                "ip_whitelist_required": False,
-                "public_ip": self._public_ip or "74.220.48.71",
-                "live_network_ip": self._get_live_network_ip(),
-            }
-            self._cached_wallet_ts = now_ts
-            return self._cached_portfolio_state
-
-        # Fallback if client is unauthenticated or credentials missing
+        self._cached_wallet_margins = {
+            "status": status_label,
+            "available_cash": 0.0,
+            "used_margin": 0.0,
+            "collateral": 0.0,
+            "total_equity": 0.0,
+            "daily_realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "daily_total_pnl": 0.0,
+            "positions_count": 0,
+            "ucc": self._ucc or "Disconnected",
+            "message": display_msg,
+            "ip_whitelist_required": False,
+            "public_ip": self._public_ip or "74.220.48.71",
+            "live_network_ip": self._get_live_network_ip(),
+        }
+        self._cached_wallet_ts = now_ts
+        self._cached_positions = {}
+        self._cached_positions_ts = now_ts
         return PortfolioState(
-            cash=311.11,
-            total_equity=588.93,
-            peak_equity=588.93,
-            daily_starting_equity=588.93,
+            cash=0.0,
+            total_equity=0.0,
+            peak_equity=0.0,
+            daily_starting_equity=0.0,
             daily_realized_pnl=0.0,
-            positions={},
         )
 
     def get_wallet_margins(self) -> Dict[str, Any]:
@@ -551,8 +543,9 @@ class GrowwBroker(BaseBroker):
             self._cached_positions_ts = time.time()
             if self._cached_portfolio_state:
                 self._cached_portfolio_state.positions = pos_dict
-            cash_val = self._cached_portfolio_state.cash if self._cached_portfolio_state else 311.11
-            self._save_portfolio_cache(cash_val, 283.07, pos_dict)
+            cash_val = self._cached_portfolio_state.cash if self._cached_portfolio_state else 0.0
+            used_m = self._cached_wallet_margins.get("used_margin", 0.0) if self._cached_wallet_margins else 0.0
+            self._save_portfolio_cache(cash_val, used_m, pos_dict)
         except Exception as e:
             logger.debug(f"Cache update on order notice: {e}")
 
@@ -561,12 +554,19 @@ class GrowwBroker(BaseBroker):
         self._cached_portfolio_ts = 0.0
         self._cached_wallet_ts = 0.0
         self._cached_positions_ts = 0.0
-        client = self._ensure_client()
+
         clean_symbol = order.symbol.replace(".NS", "").replace(".BO", "").strip().upper()
         groww_tx_type = "BUY" if order.side == OrderSide.BUY else "SELL"
         groww_order_type = "MARKET" if order.order_type == OrderType.MARKET else "LIMIT"
         groww_product = "MIS" if order.product == ProductType.MIS else "CNC"
         order_ref_id = f"g{uuid.uuid4().hex[:15]}"
+
+        client = self._ensure_client()
+        if not client and not self.is_authenticated:
+            order.status = OrderStatus.REJECTED
+            order.rejection_reason = "Groww authentication required. Please update daily Access Token in Settings."
+            logger.warning(f"Order placement skipped for {order.symbol}: Groww is unauthenticated.")
+            return order
 
         if client:
             try:
@@ -619,21 +619,39 @@ class GrowwBroker(BaseBroker):
                             return order
                         except Exception as retry_err:
                             e = retry_err
+                            err_str = str(e).lower()
+
+                is_auth_error = any(w in err_str for w in ("token", "unauthor", "401", "403", "session", "expired", "invalid"))
+                if is_auth_error:
+                    self._is_authenticated = False
+                    self._last_auth_error = str(e)
+                    order.status = OrderStatus.REJECTED
+                    order.rejection_reason = "Groww API token expired or invalid. Update Access Token in Settings."
+                    logger.error(f"Groww order placement failed: token expired/invalid ({e})")
+                    return order
 
                 if "unregistered ip" in err_str or "registered ip" in err_str or "whitelist" in err_str or "ga005" in err_str:
                     self._ip_unregistered = True
                     live_ip = self._public_ip or self._get_live_network_ip()
                     err_clean = f"Groww rejected order: Unregistered IP address (GA005). Your active connection IP is {live_ip}. Please whitelist {live_ip} in Groww -> Settings -> Trading APIs."
-                else:
-                    err_clean = str(e)
+                    order.status = OrderStatus.REJECTED
+                    order.rejection_reason = err_clean
+                    logger.error(f"Groww order placement failed: {err_clean}")
+                    return order
 
+                err_clean = str(e)
                 order.status = OrderStatus.REJECTED
                 order.rejection_reason = err_clean
                 self.kill_switch.record_rejected_order(order.symbol, err_clean)
                 logger.error(f"Groww order placement failed: {err_clean}")
                 return order
 
-        # Fallback via direct REST
+        # Fallback via direct REST (only if access_token exists)
+        if not self.access_token:
+            order.status = OrderStatus.REJECTED
+            order.rejection_reason = "Groww authentication required. Please update daily Access Token in Settings."
+            return order
+
         payload = {
             "trading_symbol": clean_symbol,
             "exchange": "NSE",
@@ -655,9 +673,15 @@ class GrowwBroker(BaseBroker):
             logger.info(f"Order successfully submitted to Groww: ID {order.order_id} ({clean_symbol})")
             return order
         except Exception as e:
+            err_str = str(e).lower()
             order.status = OrderStatus.REJECTED
             order.rejection_reason = str(e)
-            self.kill_switch.record_rejected_order(order.symbol, str(e))
+            is_auth_err = any(w in err_str for w in ("auth", "token", "401", "403", "session", "expired", "whitelist", "ga005"))
+            if is_auth_err:
+                self._is_authenticated = False
+                self._last_auth_error = str(e)
+            else:
+                self.kill_switch.record_rejected_order(order.symbol, str(e))
             return order
 
     def cancel_order(self, order_id: str) -> bool:

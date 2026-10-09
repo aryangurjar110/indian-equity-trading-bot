@@ -468,6 +468,14 @@ class AutonomousTraderService:
                     await self._sleep_interruptible(10)
                     continue
 
+                # 2. Broker Authentication Gate
+                if hasattr(self.broker, "is_authenticated") and not self.broker.is_authenticated:
+                    self.current_state = "HALTED_AUTH_REQUIRED"
+                    auth_err = getattr(self.broker, "_last_auth_error", "") or "API token expired or invalid"
+                    self._log("GROWW", f"⚠️ Groww authentication required ({auth_err}). Pausing scan cycle. Update daily Access Token in Settings to resume.", "WARNING")
+                    await self._sleep_interruptible(15)
+                    continue
+
                 # 2. Check Run Time Duration Limit
                 if self.runtime_minutes > 0 and self.started_at:
                     elapsed_mins = (now_ist - self.started_at).total_seconds() / 60.0
@@ -746,6 +754,9 @@ class AutonomousTraderService:
 
         norm_sym = _normalize_symbol(symbol)
         if norm_sym in self._in_flight_symbols:
+            return
+
+        if hasattr(self.broker, "is_authenticated") and not self.broker.is_authenticated:
             return
 
         end_dt = now_ist
