@@ -265,3 +265,50 @@ async def test_trader_state_persistence_and_market_timing_gate(tmp_path):
     await service.stop()
 
 
+@pytest.mark.anyio
+async def test_fast_position_monitor_and_fee_guaranteed_exit(tmp_path):
+    ks = KillSwitch()
+    broker = PaperBroker(initial_capital=500000.0)
+    service = AutonomousTraderService(broker=broker, kill_switch=ks, state_file=tmp_path / "trader_state.json")
+
+    # Place an open position
+    broker.place_order(Order(
+        order_id="BUY_EXIT_TEST",
+        symbol="TCS.NS",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        product=ProductType.MIS,
+        quantity=10,
+        price=3500.0,
+        stop_loss=3400.0,
+        target_price=3520.0,
+    ))
+
+    pos = broker.get_positions()["TCS.NS"]
+    assert pos.quantity == 10
+
+    # Start service with mock data
+    await service.start(
+        watchlist=["TCS.NS"],
+        strategy="trend_following",
+        scan_interval=60,  # 60s main loop scan
+        use_mock=True,
+    )
+    assert service._position_monitor_task is not None
+
+    # Simulate price moving to target (3525.0) in mock data source
+    service.mock_source.current_prices["TCS"] = 3525.0
+    service.mock_source.current_prices["TCS.NS"] = 3525.0
+
+    # Fast position monitor runs every 1.5s - wait 2.5s for fast monitor to execute exit
+    await asyncio.sleep(2.5)
+
+    # Position should have been automatically exited by fast position monitor loop without waiting for 60s
+    positions_after = broker.get_positions()
+    assert "TCS.NS" not in positions_after
+    assert service.accumulated_charges > 0.0
+
+    await service.stop()
+
+
+

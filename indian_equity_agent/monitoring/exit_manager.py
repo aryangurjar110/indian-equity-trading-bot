@@ -137,23 +137,23 @@ class ExitManager:
                     price=current_price,
                 )
 
-        # 4. Trailing Stop-Loss Ratcheting (Fee-Covered Breakeven Lock)
+        # 4. Trailing Stop-Loss Ratcheting (Fee-Covered Breakeven & Profit Lock)
         initial_risk = abs(position.average_entry_price - position.stop_loss) if position.stop_loss > 0 else 0.0
         if is_long and initial_risk > 0:
             gain = current_price - position.average_entry_price
-            # Breakeven lock for long positions: lock entry + roundtrip breakeven points + profit buffer
+            # Breakeven & profit lock for long: lock entry + roundtrip breakeven points + profit buffer (or 60% of gain)
             if gain >= self.breakeven_trigger_r * initial_risk:
-                fee_safe_sl = round(position.average_entry_price + be_pts + max(0.05, 0.05 * initial_risk), 2)
+                fee_safe_sl = round(position.average_entry_price + max(be_pts + max(0.05, 0.05 * initial_risk), gain * 0.60), 2)
                 if fee_safe_sl > position.stop_loss:
-                    logger.info(f"🔒 Moving SL to Fee-Covered Breakeven+ for {position.symbol} Long: Old SL ₹{position.stop_loss:.2f} -> New SL ₹{fee_safe_sl:.2f} (Covers ₹{total_charges:.2f} charges)")
+                    logger.info(f"🔒 Moving SL to Fee-Covered Breakeven+ for {position.symbol} Long: Old SL ₹{position.stop_loss:.2f} -> New SL ₹{fee_safe_sl:.2f} (Covers ₹{total_charges:.2f} charges + locks profit)")
                     position.stop_loss = fee_safe_sl
         elif not is_long and initial_risk > 0:
             gain = position.average_entry_price - current_price
-            # Breakeven lock for short positions: lock entry - roundtrip breakeven points - profit buffer
+            # Breakeven & profit lock for short: lock entry - roundtrip breakeven points - profit buffer (or 60% of gain)
             if gain >= self.breakeven_trigger_r * initial_risk:
-                fee_safe_sl = round(position.average_entry_price - be_pts - max(0.05, 0.05 * initial_risk), 2)
+                fee_safe_sl = round(position.average_entry_price - max(be_pts + max(0.05, 0.05 * initial_risk), gain * 0.60), 2)
                 if position.stop_loss == 0 or fee_safe_sl < position.stop_loss:
-                    logger.info(f"🔒 Moving SL to Fee-Covered Breakeven+ for {position.symbol} Short: Old SL ₹{position.stop_loss:.2f} -> New SL ₹{fee_safe_sl:.2f} (Covers ₹{total_charges:.2f} charges)")
+                    logger.info(f"🔒 Moving SL to Fee-Covered Breakeven+ for {position.symbol} Short: Old SL ₹{position.stop_loss:.2f} -> New SL ₹{fee_safe_sl:.2f} (Covers ₹{total_charges:.2f} charges + locks profit)")
                     position.stop_loss = fee_safe_sl
 
         return None

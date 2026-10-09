@@ -94,8 +94,8 @@ class MockMarketDataSource(MarketDataSource):
         inject_spread_pct: Optional[float] = None,
         inject_abnormal_price: Optional[float] = None,
     ) -> Tick:
-        """Returns quote with optional fault injection."""
-        base_price = self.current_prices.get(symbol, 1000.0)
+        clean_sym = symbol.replace(".NS", "").replace(".BO", "").strip()
+        base_price = self.current_prices.get(symbol, self.current_prices.get(clean_sym, 1000.0))
         ltp = inject_abnormal_price if inject_abnormal_price else base_price
 
         spread_pct = inject_spread_pct if inject_spread_pct is not None else 0.0005

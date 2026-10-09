@@ -119,6 +119,8 @@ class AutonomousTraderService:
         self.is_running = False
         self.was_running = False
         self._task: Optional[asyncio.Task] = None
+        self._position_monitor_task: Optional[asyncio.Task] = None
+        self._last_position_log_ts: float = 0.0
         self.watchlist: List[str] = list(self.DEFAULT_WATCHLIST)
         self.strategy_name = "Autonomous Regime-Adaptive Intelligence"
         self.current_strategy_label: Optional[str] = None
@@ -432,6 +434,7 @@ class AutonomousTraderService:
         )
 
         self._task = asyncio.create_task(self._main_loop())
+        self._position_monitor_task = asyncio.create_task(self._fast_position_monitor_loop())
         return {"status": "STARTED", "message": "Autonomous trading started successfully."}
 
     async def stop(self) -> Dict[str, Any]:
@@ -450,6 +453,14 @@ class AutonomousTraderService:
             except asyncio.CancelledError:
                 pass
             self._task = None
+
+        if self._position_monitor_task:
+            self._position_monitor_task.cancel()
+            try:
+                await self._position_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._position_monitor_task = None
 
         self._log("SYSTEM", "🛑 Autonomous Trading gracefully stopped by operator.", "WARNING")
         return {"status": "STOPPED", "message": "Autonomous trading stopped."}
@@ -606,13 +617,37 @@ class AutonomousTraderService:
             # Sleep until next scan cycle
             await self._sleep_interruptible(self.scan_interval_seconds)
 
+    async def _fast_position_monitor_loop(self):
+        """Dedicated high-frequency position monitor loop running every 1.5 seconds.
+        
+        Decoupled from the 15-45s screening/analysis cycle to ensure Stop-Loss,
+        Profit Target, Trailing Breakeven Locks, and 15:15 IST Square-off are executed
+        with sub-second responsiveness.
+        """
+        while self.is_running:
+            try:
+                now_ist = IndianMarketCalendar.now_ist()
+                port = self.broker.get_portfolio_state()
+                has_open = bool(port.positions and any(p.quantity != 0 for p in port.positions.values()))
+                if has_open:
+                    await self._manage_active_positions(now_ist)
+                    await asyncio.sleep(1.5)
+                else:
+                    await asyncio.sleep(2.0)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in fast position monitor loop: {e}", exc_info=True)
+                await asyncio.sleep(2.0)
+
     async def _manage_active_positions(self, now_ist: datetime):
         """Monitors and enforces exits (Stop-Loss, Target, Trailing Exit, 15:15 IST MIS Square-off)."""
         portfolio = self.broker.get_portfolio_state()
         if not portfolio.positions:
             return
 
-        if self.cycles_completed % 4 == 0:
+        now_ts = time.time()
+        if self._last_position_log_ts == 0.0 or (now_ts - self._last_position_log_ts >= 30.0):
             active_list = []
             for s, p in portfolio.positions.items():
                 if p.quantity != 0:
@@ -621,6 +656,7 @@ class AutonomousTraderService:
                     active_list.append(f"{s} ({p.quantity} @ ₹{p.average_entry_price:,.2f} | LTP ₹{c_p:,.2f} | P&L: {'+' if p_pnl>=0 else ''}₹{p_pnl:,.2f})")
             if active_list:
                 self._log("POSITIONS", f"📊 TRACKING POSITIONS: {', '.join(active_list)}", "INFO")
+                self._last_position_log_ts = now_ts
 
         for sym, pos in list(portfolio.positions.items()):
             if pos.quantity == 0:
@@ -630,15 +666,17 @@ class AutonomousTraderService:
             if norm_sym in self._in_flight_symbols:
                 continue
 
-            # Fetch latest price
-            current_price = pos.current_price
+            # Fetch fresh real-time price using live quote for sub-second accuracy
+            current_price = 0.0
+            try:
+                quote = (self.mock_source if self.use_mock_data else self.data_source).get_quote(sym)
+                if quote and quote.last_price > 0:
+                    current_price = quote.last_price
+            except Exception:
+                pass
+
             if current_price <= 0:
-                try:
-                    quote = (self.mock_source if self.use_mock_data else self.data_source).get_quote(sym)
-                    if quote and quote.last_price > 0:
-                        current_price = quote.last_price
-                except Exception:
-                    pass
+                current_price = pos.current_price
 
             if current_price <= 0:
                 try:
@@ -669,17 +707,10 @@ class AutonomousTraderService:
                         filled = await asyncio.to_thread(self.broker.place_order, exit_order)
                         exit_p = current_price if current_price > 0 else pos.average_entry_price
                         pnl = (exit_p - pos.average_entry_price) * pos.quantity if pos.quantity > 0 else (pos.average_entry_price - exit_p) * abs(pos.quantity)
-                        pnl_str = f"+₹{pnl:,.2f}" if pnl >= 0 else f"-₹{abs(pnl):,.2f}"
                         exit_side = "SELL" if pos.quantity > 0 else "BUY"
 
                         # Track statutory taxes & brokerage for realized closed trade only when accepted by broker
                         if filled.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
-                            self._log(
-                                "EXIT",
-                                f"🔔 EXIT EXECUTED: {clean_sym} | {exit_side} {abs(pos.quantity)} shares @ ₹{exit_p:,.2f} | P&L: {pnl_str} (SL/Target/15:15 MIS)",
-                                "SUCCESS" if pnl >= 0 else "WARNING",
-                            )
-                            exit_p = current_price if current_price > 0 else pos.average_entry_price
                             qty = abs(pos.quantity)
                             is_short = pos.quantity < 0
                             costs = self.cost_calculator.calculate_roundtrip_costs(
@@ -688,6 +719,15 @@ class AutonomousTraderService:
                                 exit_price=exit_p,
                                 is_short=is_short,
                                 product=pos.product,
+                            )
+                            net_pnl = pnl - costs["total_charges"]
+                            net_pnl_str = f"+₹{net_pnl:,.2f}" if net_pnl >= 0 else f"-₹{abs(net_pnl):,.2f}"
+                            gross_pnl_str = f"+₹{pnl:,.2f}" if pnl >= 0 else f"-₹{abs(pnl):,.2f}"
+
+                            self._log(
+                                "EXIT",
+                                f"🔔 EXIT EXECUTED: {clean_sym} | {exit_side} {qty} shares @ ₹{exit_p:,.2f} | Net P&L: {net_pnl_str} (Gross {gross_pnl_str} - ₹{costs['total_charges']:.2f} Groww charges & taxes)",
+                                "SUCCESS" if net_pnl >= 0 else "WARNING",
                             )
                             self.accumulated_charges += costs["total_charges"]
                             self.accumulated_brokerage += costs["brokerage"]
@@ -902,6 +942,27 @@ class AutonomousTraderService:
             logger.info(f"Position sizing for {symbol} returned qty=0: {size_reason}")
             return
 
+        # 5b. Fee-Guaranteed Target Calculation:
+        # Dynamically set target to guarantee positive net profit after all Groww roundtrip charges
+        min_net_profit_floor = max(2.50, 0.003 * last_price * qty)  # Minimum ₹2.50 or 0.30% of position value
+        est_target = signal.suggested_target if signal.suggested_target > 0 else (last_price * 1.01 if signal.action == "BUY" else last_price * 0.99)
+        est_costs = self.cost_calculator.calculate_roundtrip_costs(
+            quantity=qty,
+            entry_price=last_price,
+            exit_price=est_target,
+            is_short=(signal.action == "SELL"),
+            product=order_product,
+        )
+        total_roundtrip_charges = est_costs.get("total_charges", 2.0)
+        min_required_pts = round((total_roundtrip_charges + min_net_profit_floor) / qty, 2)
+
+        if signal.action == "BUY":
+            strat_pts = max(0.0, signal.suggested_target - last_price)
+            fee_guaranteed_target = round(last_price + max(strat_pts, min_required_pts), 2)
+        else:
+            strat_pts = max(0.0, last_price - signal.suggested_target)
+            fee_guaranteed_target = round(last_price - max(strat_pts, min_required_pts), 2)
+
         order = Order(
             order_id=f"AUTO_{int(datetime.now().timestamp())}_{norm_sym}",
             symbol=symbol,
@@ -911,7 +972,7 @@ class AutonomousTraderService:
             quantity=qty,
             price=last_price,
             stop_loss=signal.suggested_stop_loss,
-            target_price=signal.suggested_target,
+            target_price=fee_guaranteed_target,
         )
 
         # 6. Independent Risk Engine Hard Veto
@@ -1022,7 +1083,6 @@ class AutonomousTraderService:
             pnl = (exit_p - pos.average_entry_price) * pos.quantity if pos.quantity > 0 else (pos.average_entry_price - exit_p) * abs(pos.quantity)
             pnl_str = f"+₹{pnl:,.2f}" if pnl >= 0 else f"-₹{abs(pnl):,.2f}"
             if filled.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
-                self._log("EXIT", f"👤 MANUAL EXIT EXECUTED: {clean_name} | {abs(pos.quantity)} shares @ ₹{exit_p:,.2f} | P&L: {pnl_str}", "SUCCESS" if pnl >= 0 else "WARNING")
                 exit_p = pos.current_price if pos.current_price > 0 else pos.average_entry_price
                 qty = abs(pos.quantity)
                 is_short = pos.quantity < 0
@@ -1032,6 +1092,15 @@ class AutonomousTraderService:
                     exit_price=exit_p,
                     is_short=is_short,
                     product=pos.product,
+                )
+                net_pnl = pnl - costs["total_charges"]
+                net_pnl_str = f"+₹{net_pnl:,.2f}" if net_pnl >= 0 else f"-₹{abs(net_pnl):,.2f}"
+                gross_pnl_str = f"+₹{pnl:,.2f}" if pnl >= 0 else f"-₹{abs(pnl):,.2f}"
+
+                self._log(
+                    "EXIT",
+                    f"👤 MANUAL EXIT EXECUTED: {clean_name} | {qty} shares @ ₹{exit_p:,.2f} | Net P&L: {net_pnl_str} (Gross {gross_pnl_str} - ₹{costs['total_charges']:.2f} Groww charges & taxes)",
+                    "SUCCESS" if net_pnl >= 0 else "WARNING",
                 )
                 self.accumulated_charges += costs["total_charges"]
                 self.accumulated_brokerage += costs["brokerage"]
