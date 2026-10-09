@@ -83,7 +83,7 @@ class MarketScanner:
     def scan_market(
         self,
         max_price_inr: Optional[float] = None,
-        top_n: int = 8,
+        top_n: int = 25,
         universe: Optional[List[str]] = None,
         use_mock: bool = False,
     ) -> List[Dict[str, Any]]:

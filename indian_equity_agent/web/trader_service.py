@@ -525,15 +525,28 @@ class AutonomousTraderService:
                 candidates = await asyncio.to_thread(
                     self.market_scanner.scan_market,
                     max_price_inr=max_price,
-                    top_n=8,
+                    top_n=25,
                     universe=universe_pool,
                     use_mock=self.use_mock_data,
                 )
 
                 if candidates:
-                    top_names = ", ".join([f"{c['symbol'].replace('.NS','')}(₹{c['price']:.0f})" for c in candidates[:4]])
-                    self._log("GROWW", f"⚡ WHOLE-MARKET SCREEN: Scanned {len(universe_pool)} NSE stocks. Top setups: {top_names}", "INFO")
-                    symbols_to_evaluate = [c["symbol"] for c in candidates]
+                    # Dynamically rotate: prioritize candidates not recently evaluated to explore the whole market
+                    now_ts = time.time()
+                    available_candidates = [
+                        c for c in candidates
+                        if now_ts >= self._symbol_cooldown.get(_normalize_symbol(c["symbol"]), 0.0)
+                    ]
+                    # If all candidates are on cooldown, pick the least-recently evaluated stocks
+                    if not available_candidates:
+                        available_candidates = sorted(
+                            candidates,
+                            key=lambda c: self._symbol_cooldown.get(_normalize_symbol(c["symbol"]), 0.0)
+                        )
+
+                    top_names = ", ".join([f"{c['symbol'].replace('.NS','')}(₹{c['price']:.0f})" for c in available_candidates[:4]])
+                    self._log("GROWW", f"⚡ WHOLE-MARKET SCREEN: Scanned {len(universe_pool)} NSE stocks. Top active setups: {top_names}", "INFO")
+                    symbols_to_evaluate = [c["symbol"] for c in available_candidates]
                 else:
                     symbols_to_evaluate = self.watchlist[:8]
 
@@ -742,6 +755,7 @@ class AutonomousTraderService:
         signal: StrategySignal = strat.generate_signal(symbol, df)
         last_price = bars[-1].close
         if signal.action == "HOLD":
+            self._symbol_cooldown[norm_sym] = time.time() + 90.0
             self._log("STRATEGY", f"🔍 {norm_sym} (₹{last_price:.2f}) [{strat_label}]: Signal HOLD (Awaiting breakout confirmation)", "INFO")
             return
 
@@ -767,6 +781,7 @@ class AutonomousTraderService:
         # 4. Confidence Consensus Gatekeeper
         consensus_ok, consensus_reason = self.confidence_filter.evaluate(signal, ai_decision)
         if not consensus_ok:
+            self._symbol_cooldown[norm_sym] = time.time() + 90.0
             self._log("AI", f"🛡️ AI CONSENSUS: {norm_sym} ({consensus_reason})", "INFO")
             return
 
@@ -798,6 +813,7 @@ class AutonomousTraderService:
                 qty = adj_qty
 
         if qty <= 0:
+            self._symbol_cooldown[norm_sym] = time.time() + 60.0
             self._log("RISK", f"⚠️ Capital sizing for {norm_sym} (₹{last_price:.2f}): 0 shares ({size_reason} | Avail Cash: ₹{portfolio.cash:,.2f})", "WARNING")
             logger.info(f"Position sizing for {symbol} returned qty=0: {size_reason}")
             return
@@ -824,6 +840,7 @@ class AutonomousTraderService:
         )
 
         if not risk_decision.approved:
+            self._symbol_cooldown[norm_sym] = time.time() + 90.0
             self._log("RISK", f"🛡️ Order for {norm_sym} rejected by risk engine: {risk_decision.rejection_reason}", "WARNING")
             return
 
