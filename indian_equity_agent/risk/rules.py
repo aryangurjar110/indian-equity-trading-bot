@@ -241,21 +241,30 @@ class CircuitLimitRule(RiskRule):
 class CashSufficiencyRule(RiskRule):
     """Ensures sufficient unencumbered cash balance."""
 
-    def __init__(self):
+    def __init__(self, fees_buffer: float = 20.0):
         super().__init__(name="CashSufficiencyRule")
+        self.fees_buffer = fees_buffer
 
     def evaluate(self, order: Order, portfolio: PortfolioState, **kwargs) -> Tuple[bool, Optional[str]]:
         pos = _find_position(portfolio, order.symbol)
         order_side_str = str(order.side.value if hasattr(order.side, "value") else order.side).upper()
-        # Closing a long position generates cash; do not reject for low cash
+
+        # 1. Closing an existing position (SELL when long, or BUY when short) frees margin; never block
         if pos and pos.quantity > 0 and order_side_str == "SELL":
             return True, None
+        if pos and pos.quantity < 0 and order_side_str == "BUY":
+            return True, None
 
-        if order_side_str == "BUY":
-            is_mis = getattr(order, "product", None) == ProductType.MIS
-            leverage = 5.0 if is_mis else 1.0
-            required_margin = (order.quantity * order.price) / leverage
-            if portfolio.cash < (required_margin * 0.99):  # Allow tiny floating precision
-                prod_label = "5x Intraday MIS" if is_mis else "1x Delivery CNC"
-                return False, f"Insufficient cash: Required margin ₹{required_margin:.2f} ({prod_label}), Available cash ₹{portfolio.cash:.2f}."
+        # 2. Opening or increasing position (BUY long or SELL short) requires margin + fees buffer
+        is_mis = getattr(order, "product", None) == ProductType.MIS
+        leverage = 5.0 if is_mis else 1.0
+        required_margin = (order.quantity * order.price) / leverage
+        total_required = required_margin + self.fees_buffer
+
+        if portfolio.cash < total_required:
+            prod_label = "5x Intraday MIS" if is_mis else "1x Delivery CNC"
+            return (
+                False,
+                f"Insufficient cash: Required ₹{total_required:.2f} (margin ₹{required_margin:.2f} [{prod_label}] + ₹{self.fees_buffer:.0f} buffer), Available cash ₹{portfolio.cash:.2f}.",
+            )
         return True, None

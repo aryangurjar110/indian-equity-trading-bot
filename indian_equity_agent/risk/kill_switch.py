@@ -110,8 +110,8 @@ class KillSwitch:
         if "duplicate order" in err_lower or "reference id" in err_lower:
             logger.warning(f"Duplicate order reference id rejection on {symbol} ignored by kill switch counter: {reason}")
             return
-        if any(w in err_lower for w in ("auth", "token", "expired", "session", "unauthorized", "401", "403", "whitelist", "unregistered ip", "ga005")):
-            logger.warning(f"Configuration/Auth rejection on {symbol} ignored by risk kill switch counter: {reason}")
+        if any(w in err_lower for w in ("auth", "token", "expired", "session", "unauthorized", "401", "403", "whitelist", "unregistered ip", "ga005", "insufficient", "funds", "margin", "balance", "shortfall")):
+            logger.warning(f"Configuration/Capital rejection on {symbol} ignored by risk kill switch counter: {reason}")
             return
         self._consecutive_rejected_orders += 1
         if self._consecutive_rejected_orders >= settings.risk.max_rejected_orders_window:

@@ -354,11 +354,19 @@ class GrowwBroker(BaseBroker):
             try:
                 margin_data = client.get_available_margin_details() or {}
                 clear_cash = _to_float(margin_data.get("clear_cash", 0.0))
-                eq_details = margin_data.get("equity_margin_details") or {}
-                cnc_avail = _to_float(eq_details.get("cnc_balance_available", clear_cash))
-                avail_cash = max(clear_cash, cnc_avail)
                 used_margin = _to_float(margin_data.get("net_margin_used", 0.0))
                 collateral = _to_float(margin_data.get("collateral_available", 0.0))
+                eq_details = margin_data.get("equity_margin_details") or {}
+                cnc_avail = _to_float(eq_details.get("cnc_balance_available") or eq_details.get("margin_available") or 0.0)
+
+                # Unencumbered available cash:
+                # If cnc_avail is explicitly reported, use it. If only clear_cash is reported, subtract used_margin.
+                if cnc_avail > 0:
+                    avail_cash = cnc_avail
+                elif clear_cash > 0:
+                    avail_cash = max(0.0, round(clear_cash - used_margin, 2))
+                else:
+                    avail_cash = 0.0
 
                 positions_data = self.get_positions()
                 unrealized_pnl = sum(p.unrealized_pnl for p in positions_data.values())
@@ -541,10 +549,29 @@ class GrowwBroker(BaseBroker):
                     )
             self._cached_positions = pos_dict
             self._cached_positions_ts = time.time()
+
+            # Calculate margin consumed or released by this order
+            is_mis = order.product == ProductType.MIS
+            leverage = 5.0 if is_mis else 1.0
+            order_margin = (order.quantity * order.price) / leverage
+            est_fees = 20.0
+            total_cost = order_margin + est_fees
+
+            is_increasing = existing_key is None or (existing and ((existing.quantity > 0 and qty_delta > 0) or (existing.quantity < 0 and qty_delta < 0)))
+
             if self._cached_portfolio_state:
+                if is_increasing:
+                    self._cached_portfolio_state.cash = max(0.0, round(self._cached_portfolio_state.cash - total_cost, 2))
                 self._cached_portfolio_state.positions = pos_dict
+
             cash_val = self._cached_portfolio_state.cash if self._cached_portfolio_state else 0.0
-            used_m = self._cached_wallet_margins.get("used_margin", 0.0) if self._cached_wallet_margins else 0.0
+            base_used_m = self._cached_wallet_margins.get("used_margin", 0.0) if self._cached_wallet_margins else 0.0
+            used_m = round(base_used_m + (order_margin if is_increasing else -min(base_used_m, order_margin)), 2)
+
+            if self._cached_wallet_margins:
+                self._cached_wallet_margins["available_cash"] = cash_val
+                self._cached_wallet_margins["used_margin"] = used_m
+
             self._save_portfolio_cache(cash_val, used_m, pos_dict)
         except Exception as e:
             logger.debug(f"Cache update on order notice: {e}")
@@ -630,6 +657,18 @@ class GrowwBroker(BaseBroker):
                     logger.error(f"Groww order placement failed: token expired/invalid ({e})")
                     return order
 
+                is_funds_error = any(w in err_str for w in ("insufficient", "funds", "margin", "balance", "shortfall"))
+                if is_funds_error:
+                    if self._cached_portfolio_state:
+                        self._cached_portfolio_state.cash = 0.0
+                    self._cached_portfolio_ts = 0.0
+                    if self._cached_wallet_margins:
+                        self._cached_wallet_margins["available_cash"] = 0.0
+                    order.status = OrderStatus.REJECTED
+                    order.rejection_reason = f"Groww rejected order: Insufficient funds in account ({e})."
+                    logger.warning(f"Groww order rejected for {order.symbol} due to insufficient funds: {e}")
+                    return order
+
                 if "unregistered ip" in err_str or "registered ip" in err_str or "whitelist" in err_str or "ga005" in err_str:
                     self._ip_unregistered = True
                     live_ip = self._public_ip or self._get_live_network_ip()
@@ -677,9 +716,16 @@ class GrowwBroker(BaseBroker):
             order.status = OrderStatus.REJECTED
             order.rejection_reason = str(e)
             is_auth_err = any(w in err_str for w in ("auth", "token", "401", "403", "session", "expired", "whitelist", "ga005"))
+            is_funds_err = any(w in err_str for w in ("insufficient", "funds", "margin", "balance", "shortfall"))
             if is_auth_err:
                 self._is_authenticated = False
                 self._last_auth_error = str(e)
+            elif is_funds_err:
+                if self._cached_portfolio_state:
+                    self._cached_portfolio_state.cash = 0.0
+                self._cached_portfolio_ts = 0.0
+                if self._cached_wallet_margins:
+                    self._cached_wallet_margins["available_cash"] = 0.0
             else:
                 self.kill_switch.record_rejected_order(order.symbol, str(e))
             return order

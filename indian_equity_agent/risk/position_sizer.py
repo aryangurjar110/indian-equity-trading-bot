@@ -76,18 +76,23 @@ class PositionSizer:
             risk_budget_inr = current_equity * self.max_risk_pct
             raw_qty_by_risk = math.floor(risk_budget_inr / stop_distance)
 
+        # Reserve a mandatory ₹25 charges buffer from available cash to guarantee brokerage/tax coverage
+        fees_safety_buffer = 25.0
+        usable_cash = max(0.0, portfolio.cash - fees_safety_buffer)
+        if usable_cash <= 0:
+            return 0, 0.0, f"Available cash (₹{portfolio.cash:.2f}) is below minimum ₹{fees_safety_buffer:.2f} safety buffer required for brokerage and exchange charges."
+
         # 2. Maximum capital allocation cap for a single position
         if is_small_account:
             # Allow allocating up to 95% of available buying power so small retail capital isn't locked out
-            max_position_value = (portfolio.cash * leverage) * 0.95
+            max_position_value = (usable_cash * leverage) * 0.95
             raw_qty_by_pos_cap = math.floor(max_position_value / entry_price)
         else:
             max_position_value = current_equity * self.max_position_pct
             raw_qty_by_pos_cap = math.floor(max_position_value / entry_price)
 
         # 3. Available cash / margin cap
-        available_cash = max(0.0, portfolio.cash)
-        available_buying_power = available_cash * leverage
+        available_buying_power = usable_cash * leverage
         raw_qty_by_cash = math.floor(available_buying_power / entry_price)
 
         # 4. Liquidity / Market impact cap
@@ -102,7 +107,7 @@ class PositionSizer:
         # On small accounts, ensure minimum 1 share if affordable within available margin
         if is_small_account and final_qty <= 0:
             margin_per_share = entry_price / leverage
-            if available_cash >= margin_per_share and stop_distance <= current_equity * 0.10:
+            if usable_cash >= margin_per_share and stop_distance <= current_equity * 0.10:
                 final_qty = 1
 
         if final_qty <= 0:

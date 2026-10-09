@@ -522,7 +522,20 @@ class AutonomousTraderService:
                 # Calculate available buying power (with 5x MIS intraday leverage)
                 port_state = self.broker.get_portfolio_state()
                 avail_cash = max(0.0, port_state.cash)
-                buying_power = avail_cash * 5.0  # 5x intraday MIS leverage
+
+                # Capital Adequacy Gate: Ensure enough cash to cover minimum margin plus fees buffer (₹30)
+                if avail_cash < 30.0 and not self.use_mock_data:
+                    self._log(
+                        "GROWW",
+                        f"⚠️ Available cash in Groww wallet is ₹{avail_cash:.2f} (Below minimum ₹30.00 required for trade margin + fees buffer). Pausing new entries until account is funded.",
+                        "WARNING",
+                    )
+                    await self._sleep_interruptible(min(self.scan_interval_seconds, 60))
+                    continue
+
+                # Reserve ₹25 buffer for fees so screener max_price strictly fits within usable capital
+                usable_cash = max(0.0, avail_cash - 25.0) if not self.use_mock_data else avail_cash
+                buying_power = usable_cash * 5.0  # 5x intraday MIS leverage
 
                 # Determine universe to scan:
                 # If operator provided a small custom watchlist (<15 stocks), respect it; otherwise screen whole 50+ broad NSE market
@@ -530,7 +543,12 @@ class AutonomousTraderService:
                 universe_pool = self.watchlist if use_custom_watchlist else self.market_scanner.BROAD_NSE_UNIVERSE
 
                 # Fast batch screen: filter by buying power and rank by momentum score in ~2 seconds
-                max_price = buying_power if buying_power > 0 else 5000.0
+                max_price = buying_power if buying_power > 0 else (5000.0 if self.use_mock_data else 0.0)
+                if max_price <= 0 and not self.use_mock_data:
+                    self._log("RISK", f"⚠️ Buying power is ₹0.00 (Usable cash: ₹{usable_cash:.2f}). Skipping scan cycle.", "INFO")
+                    await self._sleep_interruptible(min(self.scan_interval_seconds, 30))
+                    continue
+
                 candidates = await asyncio.to_thread(
                     self.market_scanner.scan_market,
                     max_price_inr=max_price,
@@ -919,6 +937,22 @@ class AutonomousTraderService:
                 return
             self._in_flight_symbols.add(norm_sym)
             try:
+                # Re-verify live cash adequacy inside mutex before sending order to broker
+                if not self.use_mock_data:
+                    fresh_port = self.broker.get_portfolio_state()
+                    order_lev = 5.0 if order.product == ProductType.MIS else 1.0
+                    needed_margin = (order.quantity * order.price) / order_lev
+                    fees_buf = 20.0
+                    total_req = needed_margin + fees_buf
+                    if fresh_port.cash < total_req:
+                        self._symbol_cooldown[norm_sym] = time.time() + 90.0
+                        self._log(
+                            "RISK",
+                            f"⚠️ Order placement skipped for {clean_name}: Insufficient available cash (Need ₹{total_req:.2f} incl ₹{fees_buf:.0f} fees, Have ₹{fresh_port.cash:.2f}).",
+                            "WARNING",
+                        )
+                        return
+
                 executed = await asyncio.to_thread(self.broker.place_order, order)
                 if executed.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
                     self._symbol_cooldown.pop(norm_sym, None)
@@ -930,11 +964,14 @@ class AutonomousTraderService:
                 else:
                     self._symbol_cooldown[norm_sym] = time.time() + 180.0
                     rej_msg = executed.rejection_reason or "Broker rejected order"
-                    if "auth" in rej_msg.lower() or "token" in rej_msg.lower():
+                    rej_lower = rej_msg.lower()
+                    if "auth" in rej_lower or "token" in rej_lower:
                         self._log("GROWW", f"❌ ORDER NOT PLACED for {clean_name}: Groww Access Token is expired/invalid. Update token in Settings.", "ERROR")
-                    elif "unregistered ip" in rej_msg.lower() or "whitelist" in rej_msg.lower():
+                    elif "unregistered ip" in rej_lower or "whitelist" in rej_lower:
                         pub_ip = getattr(self.broker, "_public_ip", None) or "active IP"
                         self._log("GROWW", f"❌ ORDER NOT PLACED for {clean_name}: IP not whitelisted. Add IP {pub_ip} in Groww Web -> Settings -> Trading APIs.", "WARNING")
+                    elif any(w in rej_lower for w in ("insufficient", "funds", "margin", "balance")):
+                        self._log("GROWW", f"❌ ORDER NOT PLACED for {clean_name}: Insufficient funds in Groww wallet ({rej_msg}).", "WARNING")
                     else:
                         self._log("GROWW", f"❌ GROWW REJECTION for {clean_name} (Cooldown 3m): {rej_msg}", "ERROR")
             finally:
