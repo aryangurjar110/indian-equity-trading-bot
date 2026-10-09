@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Any, Deque, Dict, List, Optional
@@ -541,7 +542,11 @@ class AutonomousTraderService:
                     self._evaluate_symbol_safe(sym, now_ist, is_entry_allowed)
                     for sym in symbols_to_evaluate[:6]
                 ]
-                await asyncio.gather(*eval_tasks, return_exceptions=True)
+                eval_results = await asyncio.gather(*eval_tasks, return_exceptions=True)
+                for res_err in eval_results:
+                    if isinstance(res_err, Exception):
+                        logger.error(f"Error in evaluation task: {res_err}", exc_info=True)
+                        self._log("SYSTEM", f"⚠️ Candidate evaluation error: {res_err}", "WARNING")
 
                 self.current_symbol = None
                 self.cycles_completed += 1
@@ -680,6 +685,7 @@ class AutonomousTraderService:
             await self._evaluate_symbol(symbol, now_ist, is_entry_allowed)
         except Exception as e_sym:
             logger.warning(f"Skipping symbol {symbol} due to evaluation error: {e_sym}")
+            self._log("STRATEGY", f"⚠️ Error evaluating {norm_sym}: {e_sym}", "WARNING")
 
     async def _evaluate_symbol(
         self,

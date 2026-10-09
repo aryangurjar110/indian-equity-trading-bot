@@ -207,10 +207,12 @@ class StrategySignal(BaseModel):
     symbol: str
     action: str  # "BUY", "SELL", "HOLD"
     strategy_name: str
-    entry_price: float
-    suggested_stop_loss: float
-    suggested_target: float
+    entry_price: float = 0.0
+    suggested_stop_loss: float = 0.0
+    suggested_target: float = 0.0
     timeframe: str = "15m"
+    confidence: float = 0.5
+    rationale: str = ""
     indicators: Dict[str, float] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

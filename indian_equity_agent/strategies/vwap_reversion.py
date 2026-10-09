@@ -115,6 +115,8 @@ class VWAPReversionStrategy(BaseStrategy):
             action="HOLD",
             strategy_name=self.name,
             entry_price=close,
+            suggested_stop_loss=0.0,
+            suggested_target=0.0,
             indicators=snap,
             rationale=f"Price near VWAP (dev: {vwap_dev*100:+.1f}%, RSI: {rsi:.1f}); awaiting institutional dislocation",
         )

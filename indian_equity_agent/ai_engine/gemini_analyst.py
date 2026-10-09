@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Dict, Optional
 from ..core.models import AIAnalysisOutput, StrategySignal
 from ..config import settings
@@ -96,37 +97,43 @@ class GeminiMarketAnalyst:
             target=target,
         )
 
-        try:
-            from google.genai import types
+        for attempt in range(2):
+            try:
+                from google.genai import types
 
-            response = self._client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    response_schema=GeminiAnalysisResponse,
-                    temperature=0.1,
-                ),
-            )
+                response = self._client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        response_mime_type="application/json",
+                        response_schema=GeminiAnalysisResponse,
+                        temperature=0.1,
+                    ),
+                )
 
-            if not response or not response.text:
-                return self._fallback_decision(symbol, "Empty response from Gemini")
+                if not response or not response.text:
+                    return self._fallback_decision(symbol, "Empty response from Gemini")
 
-            # Parse JSON strictly into Pydantic model
-            data = json.loads(response.text)
-            parsed = GeminiAnalysisResponse(**data)
+                # Parse JSON strictly into Pydantic model
+                data = json.loads(response.text)
+                parsed = GeminiAnalysisResponse(**data)
 
-            return AIAnalysisOutput(
-                symbol=parsed.symbol,
-                action=parsed.action,
-                confidence=parsed.confidence,
-                reason=parsed.reason,
-                market_regime=parsed.market_regime,
-                risk_level=parsed.risk_level,
-                invalidating_conditions=parsed.invalidating_conditions,
-            )
+                return AIAnalysisOutput(
+                    symbol=parsed.symbol,
+                    action=parsed.action,
+                    confidence=parsed.confidence,
+                    reason=parsed.reason,
+                    market_regime=parsed.market_regime,
+                    risk_level=parsed.risk_level,
+                    invalidating_conditions=parsed.invalidating_conditions,
+                )
 
-        except Exception as e:
-            logger.error(f"Gemini AI analysis error for {symbol}: {e}")
-            return self._fallback_decision(symbol, f"Exception during AI inference: {str(e)}")
+            except Exception as e:
+                err_str = str(e)
+                if attempt == 0 and ("503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str):
+                    logger.warning(f"Gemini 503 spike for {symbol}, retrying once in 1s...")
+                    time.sleep(1.0)
+                    continue
+                logger.error(f"Gemini AI analysis error for {symbol}: {e}")
+                return self._fallback_decision(symbol, f"Exception during AI inference: {str(e)}")
