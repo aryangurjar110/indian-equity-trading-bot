@@ -567,9 +567,15 @@ def save_settings(req: SettingsUpdateRequest):
     )
     trader_service.update_broker(shared_broker)
 
+    # Automatically clear authentication tripped kill switch and cooldowns
+    if shared_kill_switch.is_active:
+        shared_kill_switch.reset("AUTHORIZE_RESET_CONFIRMED")
+        trader_service._log("SYSTEM", "🟢 Emergency Kill Switch automatically reset after new Groww credentials saved.", "SUCCESS")
+    trader_service._symbol_cooldown.clear()
+
     return {
         "status": "SUCCESS",
-        "message": "Groww credentials and limits successfully updated.",
+        "message": "Groww credentials and limits successfully updated. Trading unlocked.",
     }
 
 

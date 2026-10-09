@@ -638,14 +638,14 @@ class AutonomousTraderService:
                         pnl = (exit_p - pos.average_entry_price) * pos.quantity if pos.quantity > 0 else (pos.average_entry_price - exit_p) * abs(pos.quantity)
                         pnl_str = f"+₹{pnl:,.2f}" if pnl >= 0 else f"-₹{abs(pnl):,.2f}"
                         exit_side = "SELL" if pos.quantity > 0 else "BUY"
-                        self._log(
-                            "EXIT",
-                            f"🔔 EXIT TRIGGERED: {clean_sym} | {exit_side} {abs(pos.quantity)} shares @ ₹{exit_p:,.2f} | P&L: {pnl_str} (SL/Target/15:15 MIS)",
-                            "SUCCESS" if pnl >= 0 else "WARNING",
-                        )
 
-                        # Track statutory taxes & brokerage for realized closed trade
+                        # Track statutory taxes & brokerage for realized closed trade only when accepted by broker
                         if filled.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
+                            self._log(
+                                "EXIT",
+                                f"🔔 EXIT EXECUTED: {clean_sym} | {exit_side} {abs(pos.quantity)} shares @ ₹{exit_p:,.2f} | P&L: {pnl_str} (SL/Target/15:15 MIS)",
+                                "SUCCESS" if pnl >= 0 else "WARNING",
+                            )
                             exit_p = current_price if current_price > 0 else pos.average_entry_price
                             qty = abs(pos.quantity)
                             is_short = pos.quantity < 0
@@ -680,6 +680,21 @@ class AutonomousTraderService:
                                 exit_reason=exit_reason,
                                 product=pos.product.value if hasattr(pos.product, "value") else str(pos.product),
                             )
+                        else:
+                            self._symbol_cooldown[norm_sym] = time.time() + 60.0
+                            rej_str = filled.rejection_reason or "Broker rejected exit order"
+                            if "auth" in rej_str.lower() or "token" in rej_str.lower():
+                                self._log(
+                                    "GROWW",
+                                    f"❌ EXIT REJECTED for {clean_sym}: Groww Access Token is expired or invalid. Update token in Settings.",
+                                    "ERROR",
+                                )
+                            else:
+                                self._log(
+                                    "GROWW",
+                                    f"❌ EXIT REJECTED by Groww for {clean_sym} (Cooldown 60s): {rej_str}",
+                                    "ERROR",
+                                )
                     finally:
                         self._in_flight_symbols.discard(norm_sym)
 
@@ -848,12 +863,6 @@ class AutonomousTraderService:
         clean_name = _normalize_symbol(order.symbol)
         leverage_str = "5x Intraday (MIS)" if order.product == ProductType.MIS else "1x Delivery (CNC)"
         val_inr = order.quantity * order.price
-        self._log(
-            "TRADE",
-            f"🎯 TRADE SIGNAL: {order.side.value} {clean_name} | Qty: {order.quantity} | Price: ₹{order.price:,.2f} (Val: ₹{val_inr:,.2f}) | Leverage: {leverage_str} | SL: ₹{order.stop_loss:,.2f} | Target: ₹{order.target_price:,.2f}",
-            "SUCCESS",
-        )
-
         async with self.lock:
             if norm_sym in self._in_flight_symbols:
                 return
@@ -862,13 +871,21 @@ class AutonomousTraderService:
                 executed = await asyncio.to_thread(self.broker.place_order, order)
                 if executed.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
                     self._symbol_cooldown.pop(norm_sym, None)
-                    self._log("GROWW", f"🚀 REAL TRADE PLACED TO GROWW: {executed.side.value} {qty} {clean_name} @ ₹{order.price:,.2f} | Leverage: {leverage_str} | Groww ID: {executed.order_id}", "SUCCESS")
+                    self._log(
+                        "TRADE",
+                        f"🚀 REAL TRADE PLACED TO GROWW: {executed.side.value} {qty} {clean_name} @ ₹{order.price:,.2f} (Val: ₹{val_inr:,.2f}) | Leverage: {leverage_str} | ID: {executed.order_id}",
+                        "SUCCESS",
+                    )
                 else:
-                    self._symbol_cooldown[norm_sym] = time.time() + 300.0
-                    self._log("GROWW", f"❌ GROWW REJECTION for {clean_name} (Cooldown 5m): {executed.rejection_reason}", "ERROR")
-                    if "unregistered ip" in (executed.rejection_reason or "").lower() or "whitelist" in (executed.rejection_reason or "").lower():
+                    self._symbol_cooldown[norm_sym] = time.time() + 180.0
+                    rej_msg = executed.rejection_reason or "Broker rejected order"
+                    if "auth" in rej_msg.lower() or "token" in rej_msg.lower():
+                        self._log("GROWW", f"❌ ORDER NOT PLACED for {clean_name}: Groww Access Token is expired/invalid. Update token in Settings.", "ERROR")
+                    elif "unregistered ip" in rej_msg.lower() or "whitelist" in rej_msg.lower():
                         pub_ip = getattr(self.broker, "_public_ip", None) or "active IP"
-                        self._log("GROWW", f"⚠️ ACTION REQUIRED: Add IP {pub_ip} to Groww Web -> Settings -> Trading APIs -> Whitelist IP to trade live.", "WARNING")
+                        self._log("GROWW", f"❌ ORDER NOT PLACED for {clean_name}: IP not whitelisted. Add IP {pub_ip} in Groww Web -> Settings -> Trading APIs.", "WARNING")
+                    else:
+                        self._log("GROWW", f"❌ GROWW REJECTION for {clean_name} (Cooldown 3m): {rej_msg}", "ERROR")
             finally:
                 self._in_flight_symbols.discard(norm_sym)
 
