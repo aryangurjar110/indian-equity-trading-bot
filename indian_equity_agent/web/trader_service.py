@@ -129,6 +129,7 @@ class AutonomousTraderService:
         self._execution_lock: Optional[asyncio.Lock] = None
         self._in_flight_symbols: set[str] = set()
         self._symbol_cooldown: Dict[str, float] = {}
+        self._universe_scan_offset: int = 0
 
         # Statutory Taxes & Brokerage Accumulator (STT, GST, SEBI, IPFT, Stamp Duty, NSE Fees, Brokerage)
         self.accumulated_charges = 0.0
@@ -530,25 +531,31 @@ class AutonomousTraderService:
                     use_mock=self.use_mock_data,
                 )
 
-                if candidates:
-                    # Dynamically rotate: prioritize candidates not recently evaluated to explore the whole market
-                    now_ts = time.time()
-                    available_candidates = [
-                        c for c in candidates
-                        if now_ts >= self._symbol_cooldown.get(_normalize_symbol(c["symbol"]), 0.0)
-                    ]
-                    # If all candidates are on cooldown, pick the least-recently evaluated stocks
-                    if not available_candidates:
-                        available_candidates = sorted(
-                            candidates,
-                            key=lambda c: self._symbol_cooldown.get(_normalize_symbol(c["symbol"]), 0.0)
-                        )
+                # Dynamic Multi-Tier Whole-Market Exploration:
+                # 1. Take top 2 highest-momentum candidates from screener
+                top_momentum = [c["symbol"] for c in (candidates or [])[:2]]
 
-                    top_names = ", ".join([f"{c['symbol'].replace('.NS','')}(₹{c['price']:.0f})" for c in available_candidates[:4]])
-                    self._log("GROWW", f"⚡ WHOLE-MARKET SCREEN: Scanned {len(universe_pool)} NSE stocks. Top active setups: {top_names}", "INFO")
-                    symbols_to_evaluate = [c["symbol"] for c in available_candidates]
-                else:
-                    symbols_to_evaluate = self.watchlist[:8]
+                # 2. Take 4 rotating candidates from the broad universe so EVERY stock is explored across cycles
+                batch_size = 4
+                n_stocks = len(universe_pool)
+                rot_start = self._universe_scan_offset % n_stocks
+                rotating_slice = [universe_pool[(rot_start + i) % n_stocks] for i in range(batch_size)]
+                self._universe_scan_offset = (rot_start + batch_size) % n_stocks
+
+                # Combine uniquely
+                combined: List[str] = []
+                for s in top_momentum + rotating_slice:
+                    if s not in combined:
+                        combined.append(s)
+
+                now_ts = time.time()
+                available_symbols = [s for s in combined if now_ts >= self._symbol_cooldown.get(_normalize_symbol(s), 0.0)]
+                if not available_symbols:
+                    available_symbols = sorted(combined, key=lambda s: self._symbol_cooldown.get(_normalize_symbol(s), 0.0))
+
+                symbols_to_evaluate = available_symbols[:6]
+                names_preview = ", ".join([s.replace(".NS", "") for s in symbols_to_evaluate])
+                self._log("GROWW", f"⚡ WHOLE-MARKET ROTATION: Scanned {len(universe_pool)} stocks. Evaluating setups: {names_preview}", "INFO")
 
                 # Evaluate selected top opportunities in parallel for sub-2-second execution
                 eval_tasks = [
@@ -742,13 +749,21 @@ class AutonomousTraderService:
             return
 
         end_dt = now_ist
-        start_dt = end_dt - timedelta(days=120)
+        start_dt = end_dt - timedelta(days=60)
 
         # 1. Market Data Fetch
         if self.use_mock_data:
             bars = await asyncio.to_thread(self.mock_source.get_historical_bars, symbol.split(".")[0], start_date=start_dt, end_date=end_dt)
         else:
-            bars = await asyncio.to_thread(self.data_source.get_historical_bars, symbol, start_date=start_dt, end_date=end_dt, interval="1d")
+            is_market_active = IndianMarketCalendar.is_market_open(now_ist)
+            if is_market_active:
+                # Use live 5m intraday bars during active market hours for real-time responsiveness
+                intraday_start = now_ist - timedelta(days=5)
+                bars = await asyncio.to_thread(self.data_source.get_historical_bars, symbol, start_date=intraday_start, end_date=now_ist, interval="5m")
+                if not bars or len(bars) < 20:
+                    bars = await asyncio.to_thread(self.data_source.get_historical_bars, symbol, start_date=start_dt, end_date=end_dt, interval="1d")
+            else:
+                bars = await asyncio.to_thread(self.data_source.get_historical_bars, symbol, start_date=start_dt, end_date=end_dt, interval="1d")
 
         if not bars or len(bars) < 20:
             return
@@ -757,17 +772,42 @@ class AutonomousTraderService:
         df = pd.DataFrame(records)
         df.set_index("timestamp", inplace=True)
 
-        # 2. Autonomous Regime Identification & Strategy Selection
+        # 2. Autonomous Regime Identification & Multi-Strategy Opportunity Exploration
         if strategy is None:
             strat, strat_label, rationale = self.select_intelligent_strategy(symbol, df)
             self.current_strategy_label = strat_label
+            signal: StrategySignal = strat.generate_signal(symbol, df)
+
+            # If primary regime strategy gave HOLD, explore alternative high-edge strategies in priority order
+            if signal.action == "HOLD":
+                ranked_strats = sorted(
+                    [
+                        ("vwap_reversion", self.strategies["vwap_reversion"], "VWAP Institutional Reversion"),
+                        ("momentum_breakout", self.strategies["momentum_breakout"], "Momentum Breakout (Surge)"),
+                        ("trend_following", self.strategies["trend_following"], "Trend Following (Dual EMA + Supertrend)"),
+                        ("volatility_breakout", self.strategies["volatility_breakout"], "Volatility Breakout (Squeeze)"),
+                        ("mean_reversion", self.strategies["mean_reversion"], "Mean Reversion (Oversold/Overbought)"),
+                    ],
+                    key=lambda item: self.evolution_engine.get_strategy_weight(item[0]),
+                    reverse=True
+                )
+                for s_key, s_obj, s_name in ranked_strats:
+                    if s_obj == strat:
+                        continue
+                    alt_signal = s_obj.generate_signal(symbol, df)
+                    if alt_signal.action in ("BUY", "SELL"):
+                        strat = s_obj
+                        strat_label = s_name
+                        signal = alt_signal
+                        self.current_strategy_label = s_name
+                        logger.info(f"Multi-strategy exploration activated: {s_name} found active {alt_signal.action} for {norm_sym}")
+                        break
         else:
             strat = strategy
             strat_label = getattr(strat, "name", "Configured Strategy")
             rationale = "Strategy assigned by parameter"
+            signal: StrategySignal = strat.generate_signal(symbol, df)
 
-        # Generate Strategy Signal
-        signal: StrategySignal = strat.generate_signal(symbol, df)
         last_price = bars[-1].close
         if signal.action == "HOLD":
             self._symbol_cooldown[norm_sym] = time.time() + 90.0
@@ -933,9 +973,8 @@ class AutonomousTraderService:
             exit_p = pos.current_price if pos.current_price > 0 else pos.average_entry_price
             pnl = (exit_p - pos.average_entry_price) * pos.quantity if pos.quantity > 0 else (pos.average_entry_price - exit_p) * abs(pos.quantity)
             pnl_str = f"+₹{pnl:,.2f}" if pnl >= 0 else f"-₹{abs(pnl):,.2f}"
-            self._log("EXIT", f"👤 MANUAL EXIT: {clean_name} | {abs(pos.quantity)} shares @ ₹{exit_p:,.2f} | P&L: {pnl_str}", "INFO")
-
             if filled.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
+                self._log("EXIT", f"👤 MANUAL EXIT EXECUTED: {clean_name} | {abs(pos.quantity)} shares @ ₹{exit_p:,.2f} | P&L: {pnl_str}", "SUCCESS" if pnl >= 0 else "WARNING")
                 exit_p = pos.current_price if pos.current_price > 0 else pos.average_entry_price
                 qty = abs(pos.quantity)
                 is_short = pos.quantity < 0
@@ -971,8 +1010,12 @@ class AutonomousTraderService:
                 )
                 return {"status": "SUCCESS", "order_id": filled.order_id, "message": f"Successfully closed position for {clean_name}"}
             else:
-                self._log("EXIT", f"❌ MANUAL EXIT FAILED: {clean_name} | {filled.rejection_reason}", "ERROR")
-                return {"status": "ERROR", "order_id": filled.order_id, "message": filled.rejection_reason or "Order rejected by broker"}
+                rej_str = filled.rejection_reason or "Order rejected by Groww"
+                if "auth" in rej_str.lower() or "token" in rej_str.lower():
+                    self._log("GROWW", f"❌ MANUAL EXIT REJECTED for {clean_name}: Groww Access Token is expired/invalid. Update token in Settings.", "ERROR")
+                else:
+                    self._log("GROWW", f"❌ MANUAL EXIT REJECTED by Groww for {clean_name}: {rej_str}", "ERROR")
+                return {"status": "ERROR", "order_id": filled.order_id, "message": rej_str}
         finally:
             self._in_flight_symbols.discard(norm_target)
 

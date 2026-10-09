@@ -161,11 +161,20 @@ class StrategyEvolutionEngine:
 
         # Update Strategy Performance Statistics
         strat_key = strategy_key.lower().replace(" ", "_")
-        matched_key = "trend_following"
+        if "manual" in strat_key or exit_reason == "MANUAL":
+            # Record in trade journal history, but do not attribute or penalize automated algorithmic strategies
+            self._save_state()
+            return trade
+
+        matched_key = None
         for k in self.strategy_stats.keys():
             if k in strat_key or strat_key in k:
                 matched_key = k
                 break
+
+        if not matched_key:
+            self._save_state()
+            return trade
 
         st = self.strategy_stats.get(matched_key)
         if st:

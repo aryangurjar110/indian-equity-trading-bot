@@ -2,17 +2,17 @@
   "strategy_stats": {
     "trend_following": {
       "name": "Trend Following (Dual EMA + Supertrend)",
-      "trades_count": 40,
+      "trades_count": 0,
       "wins": 0,
-      "losses": 40,
+      "losses": 0,
       "total_pnl": 0.0,
       "gross_profit": 0.0,
       "gross_loss": 0.0,
-      "win_rate": 0.0,
-      "profit_factor": 0.0,
-      "current_streak": -40,
-      "weight": 0.2,
-      "last_updated": "2026-10-09T09:59:34.143810+05:30"
+      "win_rate": 0.5,
+      "profit_factor": 1.0,
+      "current_streak": 0,
+      "weight": 1.1,
+      "last_updated": "2026-10-09T10:00:00+05:30"
     },
     "momentum_breakout": {
       "name": "Momentum Breakout (Surge)",
@@ -71,6 +71,6 @@
       "last_updated": "2026-10-08T14:38:00.432633+05:30"
     }
   },
-  "total_recorded_trades": 50,
-  "last_evolved_at": "2026-10-09T09:59:34.143810+05:30"
+  "total_recorded_trades": 58,
+  "last_evolved_at": "2026-10-09T10:13:14.604401+05:30"
 }

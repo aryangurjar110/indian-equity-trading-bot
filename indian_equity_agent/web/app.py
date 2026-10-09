@@ -1309,6 +1309,14 @@ ${data.message}`);
           }
         }
 
+        if (data.kill_switch_active && ((data.kill_switch_reason || '').toLowerCase().includes('auth') || (data.kill_switch_reason || '').toLowerCase().includes('token'))) {
+          if (banner) {
+            banner.classList.remove('hidden');
+            if (bannerBox) bannerBox.className = "rounded-xl p-3.5 text-xs font-mono border bg-amber-950/80 border-amber-600 flex flex-wrap items-center justify-between gap-3 text-amber-200 shadow-xl";
+            if (bannerMsg) bannerMsg.innerHTML = `<span class="font-bold text-amber-300">⚠️ GROWW ACCESS TOKEN EXPIRED:</span> Your daily session token has expired. Paste today's Access Token from Groww Web &rarr; Settings &rarr; Trading APIs to resume live trades.`;
+          }
+        }
+
         const portfolio = data.portfolio || {};
         const availCash = wallet.available_cash !== undefined ? wallet.available_cash : (portfolio.cash || 0);
         const formattedCash = '₹' + availCash.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -1533,19 +1541,37 @@ ${data.message}`);
     // Manual Position Exit
     async function closeSinglePosition(symbol) {
       if (confirm(`Confirm immediate market exit for position in ${symbol}?`)) {
-        await fetch('/api/positions/close', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbol: symbol })
-        });
-        updateStatus();
+        try {
+          const res = await fetch('/api/positions/close', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol: symbol })
+          });
+          const data = await res.json();
+          if (data.status === "ERROR") {
+            alert(`⚠️ Exit Order Failed:\n\n${data.message}`);
+          }
+        } catch (err) {
+          alert("Network error closing position: " + err);
+        }
+        await updateStatus();
+        await updateLogStream();
       }
     }
 
     async function emergencyCloseAll() {
       if (confirm("EMERGENCY: Confirm immediate market exit for ALL active open positions?")) {
-        await fetch('/api/positions/close-all', { method: 'POST' });
-        updateStatus();
+        try {
+          const res = await fetch('/api/positions/close-all', { method: 'POST' });
+          const data = await res.json();
+          if (data.status === "ERROR") {
+            alert(`⚠️ Emergency Exit Failed:\n\n${data.message}`);
+          }
+        } catch (err) {
+          alert("Network error executing emergency exit: " + err);
+        }
+        await updateStatus();
+        await updateLogStream();
       }
     }
 
